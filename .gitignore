@@ -1,0 +1,4 @@
+node_modules/
+mydatabase.db
+.claude/
+*.png.bak

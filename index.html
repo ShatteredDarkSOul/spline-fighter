@@ -1,0 +1,4182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spline Fighter: Method Lab Arena</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; display:flex; justify-content:center; align-items:center; width:100vw; height:100vh; overflow:hidden; }
+canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+// =====================================================
+// 1. CONFIG AND CONSTANTS
+// =====================================================
+const DESIGN_WIDTH  = 1920;
+const DESIGN_HEIGHT = 1080;
+const GRAVITY       = 1300;
+const JUMP_SPEED    = -620;
+const MOVE_SPEED    = 300;
+const STEPS_PER_SEG = 60;
+
+const DASH_CHARGE_MIN = 0.15;   // seconds minimum hold
+const DASH_CHARGE_MAX = 1.1;    // seconds maximum hold
+const DASH_DIST_MIN   = 220;    // px at minimum charge
+const DASH_DIST_MAX   = 720;    // px at maximum charge
+
+const PLATFORMS = [
+  { x:240,  y:900, width:1440, height:50 },
+  { x:420,  y:680, width:320,  height:35 },
+  { x:1180, y:680, width:320,  height:35 },
+  { x:800,  y:520, width:320,  height:30 },
+];
+
+const SPAWN = { p1:{x:580,y:820}, p2:{x:1340,y:820} };
+
+const COL = {
+  p1:'#44aaff', p2:'#ff7744',
+  plat:'#445566', platTop:'#7799bb',
+  bg1:'#0a0a1e', bg2:'#141430',
+  spline:'#00ffff', linear:'#ff8800',
+  waypoint:'#ffff00', sampled:'#00ff88',
+  projectile:'#ff44ff', hit:'#ffffff',
+  healthBg:'#333333',
+};
+
+const METHOD_LABEL = {
+  linear:'Linear / No Method',
+  catmull:'Catmull-Rom Only',
+  full:'Full Numerical Method',
+};
+
+const CD_MAX = { dash:1.5, projectile:0.55, rush:0 };
+
+const SHOT_ENHANCE_DURATION = 12.0;
+const SHOT_ENHANCE_COOLDOWN = 6.0;
+const SHOT_MODES = ['heavy', 'twin', 'spread'];
+
+const FALL_DEATH_Y = DESIGN_HEIGHT + 160;
+
+const POWERUP_SPAWN_INTERVAL_MIN = 6;
+const POWERUP_SPAWN_INTERVAL_MAX = 9;
+const POWERUP_DURATION     = 6.0;
+const MAX_FIELD_POWERUPS   = 2;
+const POWERUP_RADIUS = 22;
+const POWERUP_SPAWN_POINTS = [
+  { x:960,  y:850 },
+  { x:580,  y:630 },
+  { x:1340, y:630 },
+  { x:960,  y:470 },
+];
+
+const DASH_CURVE_OFFSET_NORMAL  = 170;
+const DASH_CURVE_OFFSET_BOOSTED = 290;
+const PROJ_ARC_HEIGHT_NORMAL    = 200;
+const PROJ_ARC_HEIGHT_BOOSTED   = 330;
+const STEPS_PER_SEG_BOOSTED     = 100;
+
+const DASH_SPEED_NORMAL         = 820;
+const DASH_SPEED_SURGE          = 1050;
+const PROJECTILE_SPEED_NORMAL   = 540;
+const PROJECTILE_SPEED_SURGE    = 720;
+const SHOWCASE_BALL_SPEED       = 500;  // px/s for Curve Amplifier and Sample Density modules
+
+// Shield / parry constants
+const SHIELD_MAX            = 100;
+const SHIELD_DRAIN_PER_SEC  = 30;
+const SHIELD_REGEN_PER_SEC  = 20;
+const SHIELD_DAMAGE_MULT    = 0.4;
+const SHIELD_KNOCKBACK_MULT = 0.4;
+const PARRY_WINDOW          = 0.18;
+const GUARD_BREAK_STUN      = 0.70;
+
+// Hit data: damage, knockback (px/s), stun (s) for each attack type
+const HIT_DATA = {
+  attack: { damage:8,  knockbackX:260, knockbackY:-120, stun:0.12 },
+  dash:   { damage:18, knockbackX:520, knockbackY:-220, stun:0.25 },
+  normal: { damage:12, knockbackX:320, knockbackY:-140, stun:0.18 },
+  heavy:  { damage:18, knockbackX:460, knockbackY:-180, stun:0.25 },
+  twin:   { damage:9,  knockbackX:230, knockbackY:-100, stun:0.12 },
+  spread: { damage:6,  knockbackX:180, knockbackY:-80,  stun:0.10 },
+  meteor: { damage:22, knockbackX:560, knockbackY:-260, stun:0.28 },
+};
+
+// Meteor / Method Storm constants
+const METEOR_INTERVAL_MIN = 12;
+const METEOR_INTERVAL_MAX = 15;
+const METEOR_WARNING_TIME = 1.5;
+const METEOR_SPEED        = 760;
+const METEOR_RADIUS       = 28;
+
+// Meteor explosion (on impact or end-of-path)
+const METEOR_EXPLOSION_RADIUS    = 170;
+const METEOR_EXPLOSION_DAMAGE    = 16;
+const METEOR_EXPLOSION_KNOCKBACK = 500;
+const METEOR_EXPLOSION_STUN      = 0.22;
+
+// Storm intensity level thresholds (seconds of matchTime)
+const STORM_L2_TIME = 45;
+const STORM_L3_TIME = 90;
+const STORM_L4_TIME = 135;
+
+// Projectile impact constants (Patch G)
+const HEAVY_IMPACT_RADIUS     = 95;
+const HEAVY_IMPACT_DAMAGE     = 10;
+const HEAVY_IMPACT_KNOCKBACK  = 320;
+const HEAVY_IMPACT_STUN       = 0.14;
+const HEAVY_SHARD_COUNT       = 6;
+const HEAVY_SHARD_DAMAGE      = 4;
+const HEAVY_SHARD_RADIUS      = 8;
+const HEAVY_SHARD_SPEED       = 460;
+const HEAVY_SHARD_PATH_LENGTH = 220;
+
+// Menu animation timing
+const MENU_OPEN_TIME  = 0.55;
+const MENU_CLOSE_TIME = 0.40;
+// TV screen fill — compositing rect; expanded to fully cover CRT cutout hole (including top gap)
+const MENU_TV_SCREEN_FILL  = { x:468, y:148, w:804, h:624 };
+// TV mask — rounded clip shape matching fill (curved-screen illusion)
+const MENU_TV_SCREEN_MASK  = { x:468, y:148, w:804, h:624, r:30 };
+// TV safe area — inner bounds clear of CRT curve distortion; used for controls page layout
+const MENU_TV_SAFE_AREA    = { x:486, y:192, w:408, h:558 };
+// Menu text area — left-biased, clears remote; used for main menu text
+const MENU_TEXT_AREA       = { x:492, y:200, w:352, h:542 };
+// Remote — large POV foreground object, bottom-center-right
+const REMOTE_DRAW          = { x:760, y:530, w:500, h:700 };
+// Remote animation parameters
+const REMOTE_ANIM          = { enterOffsetY:600, navBouncePx:8, okScale:1.03 };
+// CRT background zoom (camera-pull-back illusion)
+const MENU_BG_ZOOM         = { startScale:2.4, endScale:1.0, anchorX:780, anchorY:518 };
+// Gameplay CRT overlay — tune per constant without touching render code
+const GAMEPLAY_CRT = {
+  enabled: true,
+  scanlineAlpha: 0.045,
+  vignetteAlpha: 0.18,
+  edgeTintAlpha: 0.035,
+};
+// Four-terminal gameplay HUD layout (Patch K; bottom terminals compacted in K.1)
+const HUD_TOP_LEFT  = { x:24,   y:24,  w:430, h:150 };
+const HUD_TOP_RIGHT = { x:1466, y:24,  w:430, h:150 };
+const HUD_P1        = { x:24,   y:884, w:420, h:184 };
+const HUD_P2        = { x:1476, y:884, w:420, h:184 };
+// Render-only camera framing offset (Patch K.2): shifts the in-world gameplay
+// view upward so the bottom player terminals cover less of the arena.
+// Affects DRAWING ONLY — never physics, collisions, input, or method math.
+const ARENA_VIEW_OFFSET_Y = -30;
+
+// Demo Lab three-terminal fullscreen layout (Patch L)
+const DEMO_LEFT_TERM   = { x: 24,  y: 24,  w: 916,  h: 720 };
+const DEMO_RIGHT_TERM  = { x: 980, y: 24,  w: 916,  h: 720 };
+const DEMO_BOTTOM_TERM = { x: 24,  y: 770, w: 1872, h: 286 };
+
+// =====================================================
+// 2. ASSET MANIFEST AND ASSET LOADER
+// =====================================================
+const ASSET_MANIFEST = {
+  player1Idle:null, player2Idle:null,
+  player1Dash:null, player2Dash:null,
+  projectile:null, arenaBackground:null, platform:null,
+  crtMenuBg:      'assets/menu/crt_bg.png',
+  crtFrameCutout: 'assets/menu/crt_frame_cutout.png',
+  remoteIdle: 'assets/menu/remote_idle.png',
+  remoteUp:   'assets/menu/remote_up.png',
+  remoteDown: 'assets/menu/remote_down.png',
+  remoteOk:   'assets/menu/remote_ok.png',
+};
+const loadedAssets = {};
+function loadAssets() {
+  Object.entries(ASSET_MANIFEST).forEach(([k,v]) => {
+    if (v !== null) {
+      const img = new Image();
+      img.onload = () => { loadedAssets[k] = img; };
+      img.onerror = () => { loadedAssets[k] = null; };
+      img.src = v;
+    }
+  });
+}
+
+// =====================================================
+// 3. NUMERICAL METHODS
+// =====================================================
+
+/*
+ * Catmull-Rom Interpolation:
+ * B(t) = 0.5 * [
+ *   2*P1
+ *   + (-P0 + P2)*t
+ *   + (2*P0 - 5*P1 + 4*P2 - P3)*t^2
+ *   + (-P0 + 3*P1 - 3*P2 + P3)*t^3
+ * ]
+ * where t in [0,1], result interpolates from P1 (t=0) to P2 (t=1)
+ */
+function catmullRomSegment(P0, P1, P2, P3, t) {
+  const t2 = t * t, t3 = t2 * t;
+  return {
+    x: 0.5*(2*P1.x + (-P0.x+P2.x)*t + (2*P0.x-5*P1.x+4*P2.x-P3.x)*t2 + (-P0.x+3*P1.x-3*P2.x+P3.x)*t3),
+    y: 0.5*(2*P1.y + (-P0.y+P2.y)*t + (2*P0.y-5*P1.y+4*P2.y-P3.y)*t2 + (-P0.y+3*P1.y-3*P2.y+P3.y)*t3),
+  };
+}
+
+function buildCurve(waypoints, stepsPerSegment) {
+  const n = waypoints.length;
+  const chain = [waypoints[0], ...waypoints, waypoints[n-1]];
+  const result = [];
+  for (let i = 0; i < chain.length - 3; i++) {
+    const skip = i === 0 ? 0 : 1;
+    for (let s = skip; s <= stepsPerSegment; s++) {
+      result.push(catmullRomSegment(chain[i], chain[i+1], chain[i+2], chain[i+3], s/stepsPerSegment));
+    }
+  }
+  return result;
+}
+
+/*
+ * Riemann-Sum Arc-Length Approximation:
+ * L ≈ Σ sqrt( (x[i+1]-x[i])^2 + (y[i+1]-y[i])^2 )
+ * Returns cumulative arc-length array starting at 0.
+ */
+function computeArcLengths(curvePoints) {
+  const L = [0];
+  for (let i = 1; i < curvePoints.length; i++) {
+    const dx = curvePoints[i].x - curvePoints[i-1].x;
+    const dy = curvePoints[i].y - curvePoints[i-1].y;
+    L.push(L[i-1] + Math.sqrt(dx*dx + dy*dy));
+  }
+  return L;
+}
+
+/*
+ * Linear Interpolation for Arc-Length Reparameterization:
+ * t_local = (d_target - L[i-1]) / (L[i] - L[i-1])
+ * position = (1 - t_local)*point[i-1] + t_local*point[i]
+ * Finds bracketing arc-length entries, then lerps between them.
+ */
+function getPositionAtDistance(curvePoints, arcLengths, distance) {
+  const total = arcLengths[arcLengths.length-1];
+  if (distance <= 0) return { x:curvePoints[0].x, y:curvePoints[0].y };
+  if (distance >= total) return { x:curvePoints[curvePoints.length-1].x, y:curvePoints[curvePoints.length-1].y };
+  let lo = 0, hi = arcLengths.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    arcLengths[mid] < distance ? lo = mid : hi = mid;
+  }
+  const span = arcLengths[hi] - arcLengths[lo];
+  const t_local = span > 0 ? (distance - arcLengths[lo]) / span : 0;
+  return {
+    x: (1-t_local)*curvePoints[lo].x + t_local*curvePoints[hi].x,
+    y: (1-t_local)*curvePoints[lo].y + t_local*curvePoints[hi].y,
+  };
+}
+
+// =====================================================
+// 4. GAME STATE
+// =====================================================
+
+function makePlayer(id, sx, sy, controls, color) {
+  return {
+    id, x:sx, y:sy, vx:0, vy:0,
+    hitbox:{ width:40, height:70 },
+    facing: id===1 ? 1 : -1,
+    onGround:false,
+    health:100, maxHealth:100,
+    color,
+    ability:{ active:false, type:null, pathData:null, distanceTraveled:0, speed:0, mode:'full' },
+    cooldowns:{ dash:0, projectile:0, rush:0 },
+    controls,
+    attackTimer:0, attackActive:false,
+    hitFlash:0, hitStunTimer:0,
+    jumpHeld:false, jumpsUsed:0, maxJumps:2,
+    isDummy:false,
+    stocks:3,
+    powerUp:null,
+    invulnTimer:0,
+    attackHitIds:new Set(),
+    dashCharging:false, dashChargeTime:0, dashPreviewPath:null,
+    shotMode:'heavy', activeShotMode:'heavy',
+    shotEnhanceActive:false, shotEnhanceTimer:0, shotEnhanceCooldown:0,
+    shield:SHIELD_MAX, maxShield:SHIELD_MAX,
+    guarding:false, guardPressedTimer:0, guardBrokenTimer:0,
+    parryFlash:0,
+    isAI:false,
+    aiInput:{ left:false, right:false, jump:false, attack:false, dash:false, projectile:false },
+    ai:{ decisionTimer:0, jumpTimer:0, attackCooldown:0 },
+    statMods:{ projectileSpeedMult:1, projectileCooldownMult:1, dashSpeedMult:1, dashCooldownMult:1, shieldRegenMult:1 },
+  };
+}
+
+const P1_CTRL = { left:'a', right:'d', jump:'w', attack:'f', dash:'g', projectile:'h', rush:'t', cycleShot:'c', enhance:'v', guard:'s' };
+const P2_CTRL = { left:'ArrowLeft', right:'ArrowRight', jump:'ArrowUp', attack:'k', dash:'l', projectile:';', rush:'o', cycleShot:'n', enhance:'m', guard:'ArrowDown' };
+
+let GS = null;   // GameState
+let DS = null;   // DemoState
+let statsInfo = { arcLength:0, sampledCount:0, distance:0, speed:0, actualSpeed:0, abilityLabel:'' };
+let screenShake = { timer:0, strength:0 };
+
+// ── TV Menu & UI state ──────────────────────────────────────────────────────
+const MENU_OPTIONS = ['RESUME','VS LOCAL','VS AI','PRACTICE','DEMO LAB','CONTROLS','RESET MATCH'];
+let UI = {
+  menuOpen:false, menuSel:0, menuPage:'main',
+  menuAnim:0, menuPhase:'closed',
+  remoteState:'idle', remoteTimer:0, remoteBounce:0,
+  selectFlash:0, flickerPulse:0,
+  pageFlashTimer:0, pageFlashMax:0, pageFlashStrength:0,
+};
+
+function initGameState() {
+  GS = {
+    mode:'versus',
+    methodMode:'full',
+    players:[
+      makePlayer(1, SPAWN.p1.x, SPAWN.p1.y, P1_CTRL, COL.p1),
+      makePlayer(2, SPAWN.p2.x, SPAWN.p2.y, P2_CTRL, COL.p2),
+    ],
+    projectiles:[],
+    platforms:PLATFORMS,
+    powerUps:[],
+    powerUpTimer: POWERUP_SPAWN_INTERVAL_MIN + Math.random() * (POWERUP_SPAWN_INTERVAL_MAX - POWERUP_SPAWN_INTERVAL_MIN),
+    winner:null,
+    frameCount:0,
+    showHitbox:false,
+    hitSparks:[],
+    meteors:[],
+    meteorTimer: METEOR_INTERVAL_MIN + Math.random()*(METEOR_INTERVAL_MAX-METEOR_INTERVAL_MIN),
+    matchTime: 0,
+    stormLevel: 1,
+    floatTexts: [],
+  };
+  DS = {
+    comparison:'dash',
+    leftEnt:null, rightEnt:null,
+    timer:0, cycleDuration:3.0,
+    puPaths:null, puAnim:null,
+    puShowcase:{ module:'curveAmplifier', slider:0.5, distRaw:0, distMethod:0, actualSpeedRaw:0, actualSpeedMethod:0, cachedRawPath:null, cachedMethodPath:null, cachedModule:null, cachedSlider:null },
+    impactShowcase: null,
+  };
+}
+
+// =====================================================
+// 5. INPUT SYSTEM
+// =====================================================
+
+const keys = {};
+
+window.addEventListener('keydown', e => {
+  const wasDown = keys[e.key];
+  keys[e.key] = true;
+
+  // TV Menu — handled before anything else
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (UI.menuPhase === 'opening' || UI.menuPhase === 'closing') return;
+    if (UI.menuOpen && UI.menuPage !== 'main') { UI.menuPage = 'main'; triggerMenuPageFlash(0.85); return; }
+    if (UI.menuOpen) {
+      UI.menuPhase = 'closing';
+      UI.menuSel = 0; UI.menuPage = 'main';
+      triggerMenuPageFlash(1.0);
+    } else {
+      UI.menuOpen = true; UI.menuPhase = 'opening';
+      UI.menuAnim = 0; UI.menuSel = 0; UI.menuPage = 'main';
+      UI.remoteState = 'idle'; UI.remoteTimer = 0; UI.remoteBounce = 0;
+      triggerMenuPageFlash(1.0);
+    }
+    return;
+  }
+  if (UI.menuOpen) {
+    if (UI.menuPhase !== 'active') { return; } // block input during transitions
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      UI.menuSel = (UI.menuSel - 1 + MENU_OPTIONS.length) % MENU_OPTIONS.length;
+      UI.remoteState = 'up'; UI.remoteTimer = 0.15; UI.remoteBounce = 0;
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      UI.menuSel = (UI.menuSel + 1) % MENU_OPTIONS.length;
+      UI.remoteState = 'down'; UI.remoteTimer = 0.15; UI.remoteBounce = 0;
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'z' || e.key === 'Z') {
+      UI.remoteState = 'ok'; UI.remoteTimer = 0.18; UI.remoteBounce = 0;
+      UI.selectFlash = 0.18;
+      handleMenuSelect();
+      return;
+    }
+    return; // block all game input while menu is open
+  }
+
+  if (e.key === 'Tab') { e.preventDefault(); toggleDemoLab(); return; }
+  if (e.key === ' ')   { if (GS.mode==='demoLab') { e.preventDefault(); restartDemo(); } return; }
+  if (e.key === 'ArrowDown' && GS.mode !== 'demoLab') { e.preventDefault(); }
+  if (e.key === '1')   { GS.methodMode = 'linear';  return; }
+  if (e.key === '2')   { GS.methodMode = 'catmull'; return; }
+  if (e.key === '3')   { GS.methodMode = 'full';    return; }
+  if (e.key === 'r' || e.key === 'R') { resetMatch(); return; }
+  if (e.key === 'p' || e.key === 'P') { togglePractice(); return; }
+  if (e.key === 'i' || e.key === 'I') { toggleAI(); return; }
+  if (e.key === '\\')  { GS.showHitbox = !GS.showHitbox; return; }
+
+  if (GS.mode !== 'demoLab') {
+    if (!wasDown && (e.key === 'c' || e.key === 'C')) { cycleShotMode(GS.players[0]); return; }
+    if (!wasDown && (e.key === 'v' || e.key === 'V')) { tryActivateEnhance(GS.players[0]); return; }
+    if (!wasDown && (e.key === 'n' || e.key === 'N')) { cycleShotMode(GS.players[1]); return; }
+    if (!wasDown && (e.key === 'm' || e.key === 'M')) { tryActivateEnhance(GS.players[1]); return; }
+  }
+
+  if (GS.mode === 'demoLab') {
+    if (e.key === 'g' || e.key === 'G') { DS.comparison='dash';       restartDemo(); return; }
+    if (e.key === 'h' || e.key === 'H') { DS.comparison='projectile'; restartDemo(); return; }
+    if (e.key === 'u' || e.key === 'U') { DS.comparison='powerups';   restartDemo(); return; }
+    if (e.key === 'm' || e.key === 'M') { DS.comparison='meteor';     restartDemo(); return; }
+    if (e.key === 'b' || e.key === 'B') { DS.comparison='impact';     restartDemo(); return; }
+    if (DS.comparison === 'impact' && DS.impactShowcase) {
+      const _itypes = ['heavy','twin','spread'];
+      if (e.key === 'q' || e.key === 'Q') {
+        const idx = _itypes.indexOf(DS.impactShowcase.type);
+        DS.impactShowcase = { type: _itypes[(idx + 2) % 3] };
+        restartDemo(); return;
+      }
+      if (e.key === 'e' || e.key === 'E') {
+        const idx = _itypes.indexOf(DS.impactShowcase.type);
+        DS.impactShowcase = { type: _itypes[(idx + 1) % 3] };
+        restartDemo(); return;
+      }
+    }
+    if (DS.comparison === 'powerups' && DS.puShowcase) {
+      const _mods = ['curveAmplifier','sampleDensityBoost','constantSpeedSurge'];
+      if (e.key === 'q' || e.key === 'Q') {
+        const idx = _mods.indexOf(DS.puShowcase.module);
+        DS.puShowcase.module = _mods[(idx + 2) % 3];
+        DS.puShowcase.distRaw = 0; DS.puShowcase.distMethod = 0;
+        DS.puShowcase.cachedRawPath = null; DS.puShowcase.cachedMethodPath = null; return;
+      }
+      if (e.key === 'e' || e.key === 'E') {
+        const idx = _mods.indexOf(DS.puShowcase.module);
+        DS.puShowcase.module = _mods[(idx + 1) % 3];
+        DS.puShowcase.distRaw = 0; DS.puShowcase.distMethod = 0;
+        DS.puShowcase.cachedRawPath = null; DS.puShowcase.cachedMethodPath = null; return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        DS.puShowcase.slider = parseFloat(Math.max(0, DS.puShowcase.slider - 0.05).toFixed(2));
+        DS.puShowcase.cachedRawPath = null; DS.puShowcase.cachedMethodPath = null; return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        DS.puShowcase.slider = parseFloat(Math.min(1, DS.puShowcase.slider + 0.05).toFixed(2));
+        DS.puShowcase.cachedRawPath = null; DS.puShowcase.cachedMethodPath = null; return;
+      }
+    }
+  }
+});
+
+window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+function isDown(k) { return !!keys[k]; }
+
+function toggleDemoLab() {
+  if (GS.mode === 'demoLab') { GS.mode = 'versus'; }
+  else { GS.mode = 'demoLab'; restartDemo(); }
+}
+
+function togglePractice() {
+  if (GS.mode === 'practice') {
+    const mm = GS.methodMode; const sh = GS.showHitbox;
+    initGameState(); GS.methodMode = mm; GS.showHitbox = sh;
+    GS.mode = 'versus';
+  } else {
+    GS.mode = 'practice';
+    GS.players[1].isDummy = true;
+    GS.players[1].health = 100;
+  }
+}
+
+function toggleAI() {
+  const mm = GS.methodMode; const sh = GS.showHitbox; const wasAI = GS.mode === 'vsai';
+  initGameState(); GS.methodMode = mm; GS.showHitbox = sh;
+  if (wasAI) { GS.mode = 'versus'; return; }
+  GS.mode = 'vsai';
+  GS.players[1].isAI = true;
+  GS.players[1].isDummy = false;
+}
+
+function resetMatch() {
+  const mm = GS.methodMode; const mode = GS.mode; const sh = GS.showHitbox;
+  initGameState();
+  GS.methodMode = mm; GS.mode = mode; GS.showHitbox = sh;
+  if (mode === 'practice') GS.players[1].isDummy = true;
+  if (mode === 'vsai')     { GS.players[1].isAI = true; GS.players[1].isDummy = false; }
+  if (mode === 'demoLab') restartDemo();
+  statsInfo = { arcLength:0, sampledCount:0, distance:0, speed:0, actualSpeed:0, abilityLabel:'' };
+}
+
+function handleMenuSelect() {
+  const opt = MENU_OPTIONS[UI.menuSel];
+  if (opt === 'RESUME')      { UI.menuPhase = 'closing'; triggerMenuPageFlash(0.75); return; }
+  if (opt === 'VS LOCAL')    { const mm=GS.methodMode,sh=GS.showHitbox; initGameState(); GS.methodMode=mm; GS.showHitbox=sh; GS.mode='versus'; UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
+  if (opt === 'VS AI')       { toggleAI(); UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
+  if (opt === 'PRACTICE')    { const mm=GS.methodMode,sh=GS.showHitbox; initGameState(); GS.methodMode=mm; GS.showHitbox=sh; GS.mode='practice'; GS.players[1].isDummy=true; UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
+  if (opt === 'DEMO LAB')    { if(GS.mode!=='demoLab'){GS.mode='demoLab'; restartDemo();} UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
+  if (opt === 'CONTROLS')    { UI.menuPage='controls'; triggerMenuPageFlash(0.85); return; }
+  if (opt === 'RESET MATCH') { resetMatch(); UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
+}
+
+// =====================================================
+// 6. ARENA AND PHYSICS
+// =====================================================
+
+function getInput(player, dir) {
+  if (player.isAI) return !!player.aiInput[dir];
+  return isDown(player.controls[dir]);
+}
+
+function physicsStep(player, dt) {
+  if (player.ability.active && player.ability.type === 'dash') return;
+
+  player.vy += GRAVITY * dt;
+
+  if (!player.isDummy) {
+    if (player.hitStunTimer > 0 || player.guardBrokenTimer > 0) {
+      player.vx *= 0.78; if (Math.abs(player.vx) < 2) player.vx = 0;
+    } else if (player.guarding) {
+      player.vx *= 0.5; if (Math.abs(player.vx) < 5) player.vx = 0;
+    } else {
+      const left  = getInput(player, 'left');
+      const right = getInput(player, 'right');
+      if (left)       { player.vx = -MOVE_SPEED; player.facing = -1; }
+      else if (right) { player.vx =  MOVE_SPEED; player.facing =  1; }
+      else            { player.vx *= 0.78; if (Math.abs(player.vx) < 2) player.vx = 0; }
+    }
+  } else {
+    player.vx = 0;
+  }
+
+  player.x += player.vx * dt;
+  player.y += player.vy * dt;
+
+  player.onGround = false;
+  for (const plat of PLATFORMS) resolvePlatform(player, plat, dt);
+
+  if (player.x < 0) { player.x = 0; player.vx = 0; }
+  if (player.x + player.hitbox.width > DESIGN_WIDTH) { player.x = DESIGN_WIDTH - player.hitbox.width; player.vx = 0; }
+
+  if (player.y > FALL_DEATH_Y) {
+    const scorer = player.id === 1 ? 2 : 1;
+    loseStock(player, scorer);
+  }
+}
+
+function resolvePlatform(player, plat, dt) {
+  const pw = player.hitbox.width, ph = player.hitbox.height;
+  if (player.x + pw <= plat.x || player.x >= plat.x + plat.width) return;
+  if (player.y + ph <= plat.y || player.y >= plat.y + plat.height) return;
+  const prevBottom = (player.y + ph) - player.vy * dt;
+  if (prevBottom <= plat.y + 4 && player.vy >= 0) {
+    player.y = plat.y - ph;
+    player.vy = 0;
+    player.onGround = true;
+  }
+}
+
+function tryJump(player) {
+  if (player.isDummy || player.guarding || player.guardBrokenTimer > 0) return;
+  const held = getInput(player, 'jump');
+  if (player.onGround) player.jumpsUsed = 0;
+  if (held && !player.jumpHeld && player.jumpsUsed < player.maxJumps) {
+    player.vy = JUMP_SPEED;
+    player.onGround = false;
+    player.jumpsUsed++;
+    player.jumpHeld = true;
+  }
+  if (!held) player.jumpHeld = false;
+}
+
+// =====================================================
+// 7. ABILITY PATH GENERATION
+// =====================================================
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+// Directional charge dash — endpoint based on facing + distance, NOT enemy position
+function makeDashPathDir(px, py, facing, dashDistance, curveOffset=DASH_CURVE_OFFSET_NORMAL, steps=STEPS_PER_SEG) {
+  const P0 = { x:px - facing*60, y:py };
+  const P1 = { x:px, y:py };
+  const P2 = { x:px + facing * dashDistance * 0.5, y:py - curveOffset };
+  const P3 = { x:px + facing * dashDistance, y:py };
+
+  const wpts = [P0, P1, P2, P3];
+  const cpts = buildCurve(wpts, steps);
+  const arcs = computeArcLengths(cpts);
+  const total = arcs[arcs.length-1];
+  return { waypoints:wpts, curvePoints:cpts, arcLengths:arcs, totalLength:total, linearSegments:wpts };
+}
+
+function makeProjectilePath(px, py, tx, ty, facing, arcHeight=PROJ_ARC_HEIGHT_NORMAL, steps=STEPS_PER_SEG) {
+  const P0 = { x:px - facing*20, y:py };
+  const P1 = { x:px + facing*10, y:py };
+  const midX = (px+tx)/2, midY = (py+ty)/2;
+  const P2 = { x:midX, y:midY - arcHeight };
+  const P3 = { x:tx, y:ty };
+
+  const wpts = [P0, P1, P2, P3];
+  const cpts = buildCurve(wpts, steps);
+  const arcs = computeArcLengths(cpts);
+  const total = arcs[arcs.length-1];
+  return {
+    waypoints:wpts, curvePoints:cpts, arcLengths:arcs, totalLength:total,
+    linearSegments:wpts,
+  };
+}
+
+function linearSegLen(segs) {
+  let l = 0;
+  for (let i = 1; i < segs.length; i++) {
+    const dx = segs[i].x-segs[i-1].x, dy = segs[i].y-segs[i-1].y;
+    l += Math.sqrt(dx*dx+dy*dy);
+  }
+  return l;
+}
+
+function linearPosAtDist(segs, dist) {
+  let traveled = 0;
+  for (let i = 1; i < segs.length; i++) {
+    const dx = segs[i].x-segs[i-1].x, dy = segs[i].y-segs[i-1].y;
+    const segL = Math.sqrt(dx*dx+dy*dy);
+    if (traveled + segL >= dist) {
+      const t = segL > 0 ? (dist-traveled)/segL : 0;
+      return { x:segs[i-1].x+dx*t, y:segs[i-1].y+dy*t };
+    }
+    traveled += segL;
+  }
+  return { x:segs[segs.length-1].x, y:segs[segs.length-1].y };
+}
+
+// Equal time per segment: each segment gets same duration regardless of length.
+// Long segments appear fast, short ones slow — visibly inconsistent speed.
+function linearPosEqualTime(segs, progress) {
+  const n = segs.length - 1;
+  if (n <= 0) return { x:segs[0].x, y:segs[0].y };
+  const sp = Math.min(progress * n, n - 1e-6);
+  const idx = Math.floor(sp);
+  const t = sp - idx;
+  const a = segs[idx], b = segs[idx+1];
+  return { x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t };
+}
+
+function posOnPath(pathData, dist, mode) {
+  if (mode === 'linear') {
+    const total = linearSegLen(pathData.linearSegments);
+    const progress = total > 0 ? Math.min(dist / total, 1) : 0;
+    return linearPosEqualTime(pathData.linearSegments, progress);
+  }
+  if (mode === 'catmull') {
+    // raw parameter (uniform index) — speed varies noticeably
+    const frac = Math.min(dist / pathData.totalLength, 1);
+    const idx = Math.min(Math.floor(frac * (pathData.curvePoints.length-1)), pathData.curvePoints.length-1);
+    return { x:pathData.curvePoints[idx].x, y:pathData.curvePoints[idx].y };
+  }
+  // full: arc-length reparameterization → constant speed
+  return getPositionAtDistance(pathData.curvePoints, pathData.arcLengths, dist);
+}
+
+function totalLen(pathData, mode) {
+  return mode === 'linear' ? linearSegLen(pathData.linearSegments) : pathData.totalLength;
+}
+
+// Track last-used variant to avoid identical back-to-back paths
+let _lastMeteorVariant = -1;
+
+// Generates a curved arena-crossing meteor path using the full numerical pipeline
+function makeMeteorPath(variant) {
+  let v;
+  if (variant !== undefined) {
+    v = variant;
+  } else {
+    const candidates = [0, 1, 2].filter(x => x !== _lastMeteorVariant);
+    v = candidates[Math.floor(Math.random() * candidates.length)];
+  }
+  _lastMeteorVariant = v;
+  const jit = () => (Math.random() - 0.5) * 160;
+  let P0, P1, P2, P3;
+  if (v === 0) {
+    // Left-to-right arc
+    P0 = { x:-80,   y:160+jit() }; P1 = { x:280,  y:290+jit() };
+    P2 = { x:1020,  y:500+jit() }; P3 = { x:1900, y:920 };
+  } else if (v === 1) {
+    // Right-to-left arc
+    P0 = { x:2000,  y:150+jit() }; P1 = { x:1640, y:260+jit() };
+    P2 = { x:900,   y:490+jit() }; P3 = { x:20,   y:920 };
+  } else {
+    // Center-drop to one side
+    const toRight = Math.random() < 0.5;
+    P0 = { x:960+(toRight?-100:100), y:-60 };
+    P1 = { x:960+(toRight?-200:200), y:200+jit() };
+    P2 = { x:toRight?1320:600,        y:490+jit() };
+    P3 = { x:toRight?1820:100,        y:920 };
+  }
+  const wpts = [P0,P1,P2,P3];
+  const cpts = buildCurve(wpts, STEPS_PER_SEG);
+  const arcs = computeArcLengths(cpts);
+  return { waypoints:wpts, curvePoints:cpts, arcLengths:arcs, totalLength:arcs[arcs.length-1], linearSegments:wpts };
+}
+
+// =====================================================
+// 8. ABILITY SYSTEM
+// =====================================================
+
+function getAbilityModifiers(player) {
+  const pu = player.powerUp;
+  const mods = {
+    curveOffset: DASH_CURVE_OFFSET_NORMAL,
+    projectileArcHeight: PROJ_ARC_HEIGHT_NORMAL,
+    stepsPerSegment: STEPS_PER_SEG,
+    dashSpeed: DASH_SPEED_NORMAL,
+    projectileSpeed: PROJECTILE_SPEED_NORMAL,
+    powerUpLabel: '',
+  };
+  if (!pu) return mods;
+  if (pu.type === 'curveAmplifier')     { mods.curveOffset = DASH_CURVE_OFFSET_BOOSTED; mods.projectileArcHeight = PROJ_ARC_HEIGHT_BOOSTED; mods.powerUpLabel = ' [CURVE+]'; }
+  if (pu.type === 'sampleDensityBoost') { mods.stepsPerSegment = STEPS_PER_SEG_BOOSTED; mods.powerUpLabel = ' [N+]'; }
+  if (pu.type === 'constantSpeedSurge') { mods.dashSpeed = DASH_SPEED_SURGE; mods.projectileSpeed = PROJECTILE_SPEED_SURGE; mods.powerUpLabel = ' [SPEED+]'; }
+  return mods;
+}
+
+function getDashDistance(chargeTime) {
+  const ratio = Math.min(chargeTime / DASH_CHARGE_MAX, 1);
+  return DASH_DIST_MIN + (DASH_DIST_MAX - DASH_DIST_MIN) * ratio;
+}
+
+function executeDash(player) {
+  if (player.ability.active || player.cooldowns.dash > 0) return;
+  const dist = getDashDistance(player.dashChargeTime);
+  const px = player.x + player.hitbox.width/2;
+  const py = player.y + player.hitbox.height/2;
+  const mods = getAbilityModifiers(player);
+  const effectiveMode = GS.methodMode;
+  const pd = makeDashPathDir(px, py, player.facing, dist, mods.curveOffset, mods.stepsPerSegment);
+  player.ability = { active:true, type:'dash', pathData:pd, distanceTraveled:0, speed:mods.dashSpeed * player.statMods.dashSpeedMult, mode:effectiveMode };
+  player.cooldowns.dash = CD_MAX.dash * player.statMods.dashCooldownMult;
+  player.dashCharging = false; player.dashChargeTime = 0; player.dashPreviewPath = null;
+  statsInfo.actualSpeed = 0;
+  const surgeLabel = (mods.dashSpeed > DASH_SPEED_NORMAL && effectiveMode === 'full')
+    ? ' [Constant-Speed Surge]' : mods.powerUpLabel;
+  statsInfo.abilityLabel = `P${player.id} Spline Dash [${METHOD_LABEL[effectiveMode]}] ${dist.toFixed(0)}px${surgeLabel}`;
+}
+
+function updateDashCharge(player, dt) {
+  if (player.isDummy || player.ability.active || player.hitStunTimer > 0 || player.guarding || player.guardBrokenTimer > 0) {
+    player.dashCharging = false; player.dashPreviewPath = null;
+    return;
+  }
+  const keyHeld = isDown(player.controls.dash);
+  const canCharge = player.cooldowns.dash <= 0;
+
+  if (keyHeld && canCharge) {
+    player.dashCharging = true;
+    player.dashChargeTime = Math.min(player.dashChargeTime + dt, DASH_CHARGE_MAX);
+    if (player.dashChargeTime >= DASH_CHARGE_MIN) {
+      const dist = getDashDistance(player.dashChargeTime);
+      const px = player.x + player.hitbox.width/2;
+      const py = player.y + player.hitbox.height/2;
+      const mods = getAbilityModifiers(player);
+      player.dashPreviewPath = makeDashPathDir(px, py, player.facing, dist, mods.curveOffset, mods.stepsPerSegment);
+    }
+  } else if (!keyHeld && player.dashCharging) {
+    if (player.dashChargeTime >= DASH_CHARGE_MIN) executeDash(player);
+    player.dashCharging = false; player.dashChargeTime = 0; player.dashPreviewPath = null;
+  } else if (!keyHeld) {
+    player.dashChargeTime = 0;
+  }
+}
+
+function cycleShotMode(player) {
+  const idx = SHOT_MODES.indexOf(player.shotMode);
+  player.shotMode = SHOT_MODES[(idx + 1) % SHOT_MODES.length];
+}
+
+function tryActivateEnhance(player) {
+  if (player.isDummy || player.hitStunTimer > 0 || player.guarding || player.guardBrokenTimer > 0 || player.shotEnhanceActive || player.shotEnhanceCooldown > 0) return;
+  player.shotEnhanceActive = true;
+  player.shotEnhanceTimer = SHOT_ENHANCE_DURATION;
+  player.activeShotMode = player.shotMode;
+}
+
+function spawnProjectile(ownerId, px, py, pathData, opts) {
+  GS.projectiles.push({
+    active:true, ownerId, x:px, y:py,
+    pathData, distanceTraveled:0,
+    speed:opts.speed, mode:opts.mode,
+    damage:opts.damage, hitRadius:opts.hitRadius,
+    shotType:opts.shotType || 'normal',
+    canImpact:        opts.canImpact        !== undefined ? opts.canImpact        : true,
+    bouncesRemaining: opts.bouncesRemaining !== undefined ? opts.bouncesRemaining : 0,
+    isShard:          opts.isShard          || false,
+    generation:       opts.generation       || 0,
+    justBounced:      false,
+  });
+}
+
+function fireProjectileVariant(player, px, py, tx, ty, arcHeight, steps, opts) {
+  const pd = makeProjectilePath(px, py, tx, ty, player.facing, arcHeight, steps);
+  spawnProjectile(player.id, px, py, pd, opts);
+}
+
+function tryProjectile(player, target) {
+  if (player.cooldowns.projectile > 0) return;
+  const px = player.x + player.hitbox.width/2, py = player.y + player.hitbox.height/2;
+  const tx = target.x  + target.hitbox.width/2, ty = target.y  + target.hitbox.height/2;
+  const mods = getAbilityModifiers(player);
+  const effectiveMode = GS.methodMode;
+  statsInfo.actualSpeed = 0;
+  player.cooldowns.projectile = CD_MAX.projectile * player.statMods.projectileCooldownMult;
+
+  const baseOpts = { speed:mods.projectileSpeed * player.statMods.projectileSpeedMult, mode:effectiveMode };
+
+  if (player.shotEnhanceActive) {
+    const sm = player.activeShotMode;
+    const ah = mods.projectileArcHeight;
+    const st = mods.stepsPerSegment;
+    if (sm === 'heavy') {
+      fireProjectileVariant(player, px, py, tx, ty, ah, st, { ...baseOpts, damage:18, hitRadius:26, shotType:'heavy', bouncesRemaining:0 });
+      statsInfo.abilityLabel = `P${player.id} HEAVY [${METHOD_LABEL[effectiveMode]}]${mods.powerUpLabel}`;
+    } else if (sm === 'twin') {
+      fireProjectileVariant(player, px, py, tx, ty, ah + 70, st, { ...baseOpts, damage:9, hitRadius:14, shotType:'twin', bouncesRemaining:2 });
+      fireProjectileVariant(player, px, py, tx, ty, Math.max(ah - 70, 40), st, { ...baseOpts, damage:9, hitRadius:14, shotType:'twin', bouncesRemaining:2 });
+      statsInfo.abilityLabel = `P${player.id} TWIN [${METHOD_LABEL[effectiveMode]}]${mods.powerUpLabel}`;
+    } else {
+      fireProjectileVariant(player, px, py, tx, ty, ah, st,      { ...baseOpts, damage:6, hitRadius:12, shotType:'spread', bouncesRemaining:1 });
+      fireProjectileVariant(player, px, py, tx, ty, ah + 90, st, { ...baseOpts, damage:6, hitRadius:12, shotType:'spread', bouncesRemaining:1 });
+      fireProjectileVariant(player, px, py, tx, ty, Math.max(ah - 90, 30), st, { ...baseOpts, damage:6, hitRadius:12, shotType:'spread', bouncesRemaining:1 });
+      statsInfo.abilityLabel = `P${player.id} SPREAD [${METHOD_LABEL[effectiveMode]}]${mods.powerUpLabel}`;
+    }
+  } else {
+    fireProjectileVariant(player, px, py, tx, ty, mods.projectileArcHeight, mods.stepsPerSegment,
+      { ...baseOpts, damage:12, hitRadius:16, shotType:'normal' });
+    const surgeLabel = (mods.projectileSpeed > PROJECTILE_SPEED_NORMAL && effectiveMode === 'full')
+      ? ' [Constant-Speed Surge]' : mods.powerUpLabel;
+    statsInfo.abilityLabel = `P${player.id} Projectile [${METHOD_LABEL[effectiveMode]}]${surgeLabel}`;
+  }
+}
+
+// Phase 2 insertion point: tryRush(player, target) { ... }
+
+// =====================================================
+// 8b. VS AI SYSTEM
+// =====================================================
+
+function updateAIPlayer(player, target, dt) {
+  const ai  = player.ai;
+  const inp = player.aiInput;
+
+  ai.decisionTimer  = Math.max(0, ai.decisionTimer  - dt);
+  ai.jumpTimer      = Math.max(0, ai.jumpTimer      - dt);
+  ai.attackCooldown = Math.max(0, ai.attackCooldown - dt);
+
+  // Clear all inputs each frame
+  inp.left = inp.right = inp.jump = inp.attack = inp.projectile = false;
+
+  if (player.ability.active) return;
+  if (player.hitStunTimer > 0) return;
+
+  const pcx  = player.x + player.hitbox.width/2;
+  const tcx  = target.x  + target.hitbox.width/2;
+  const dx   = tcx - pcx;
+  const dist = Math.abs(dx);
+
+  // Movement / attack decisions
+  if (dist > 380) {
+    dx > 0 ? (inp.right = true) : (inp.left = true);
+  } else if (dist < 100) {
+    // Back off slightly + attack
+    dx > 0 ? (inp.left = true) : (inp.right = true);
+    if (ai.attackCooldown <= 0) { inp.attack = true; ai.attackCooldown = 0.6; }
+  } else {
+    // Medium range: periodic decision
+    if (ai.decisionTimer <= 0) {
+      const roll = Math.random();
+      if (roll < 0.35 && player.cooldowns.projectile <= 0) {
+        inp.projectile = true;
+      } else if (roll < 0.55) {
+        dx > 0 ? (inp.right = true) : (inp.left = true);
+      }
+      ai.decisionTimer = 0.8 + Math.random() * 1.2;
+    }
+  }
+
+  // Dash: occasional, direct execution (AI doesn't hold keys)
+  if (dist > 180 && dist < 640 && player.cooldowns.dash <= 0) {
+    if (Math.random() < 0.007) {
+      player.facing = dx > 0 ? 1 : -1;
+      player.dashChargeTime = DASH_CHARGE_MIN + Math.random() * 0.55;
+      executeDash(player);
+    }
+  }
+
+  // Occasional jump
+  if (player.onGround && ai.jumpTimer <= 0 && Math.random() < 0.012) {
+    inp.jump = true;
+    ai.jumpTimer = 2.5 + Math.random() * 2.0;
+  }
+
+  // Occasionally activate heavy-shot enhancement at medium range
+  if (!player.shotEnhanceActive && player.shotEnhanceCooldown <= 0 && dist > 200 && dist < 700) {
+    if (Math.random() < 0.003) { player.shotMode = 'heavy'; tryActivateEnhance(player); }
+  }
+}
+
+// =====================================================
+// 8c. POWER-UP SYSTEM
+// =====================================================
+
+function spawnPowerUp() {
+  if (GS.powerUps.length >= MAX_FIELD_POWERUPS) return;
+  const types = ['constantSpeedSurge', 'curveAmplifier', 'sampleDensityBoost'];
+  const type  = types[Math.floor(Math.random() * types.length)];
+  const occupied = new Set(GS.powerUps.map(p => `${p.x},${p.y}`));
+  const available = POWERUP_SPAWN_POINTS.filter(sp => !occupied.has(`${sp.x},${sp.y - POWERUP_RADIUS}`));
+  const pool = available.length > 0 ? available : POWERUP_SPAWN_POINTS;
+  const pos  = pool[Math.floor(Math.random() * pool.length)];
+  GS.powerUps.push({ x:pos.x, y:pos.y - POWERUP_RADIUS, type, glowPhase:0 });
+}
+
+function updatePowerUps(dt) {
+  GS.powerUpTimer -= dt;
+  if (GS.powerUpTimer <= 0 && GS.powerUps.length < MAX_FIELD_POWERUPS) {
+    spawnPowerUp();
+    GS.powerUpTimer = POWERUP_SPAWN_INTERVAL_MIN + Math.random() * (POWERUP_SPAWN_INTERVAL_MAX - POWERUP_SPAWN_INTERVAL_MIN);
+  }
+  for (const pu of GS.powerUps) pu.glowPhase += dt * 2.5;
+
+  for (const player of GS.players) {
+    if (player.invulnTimer > 0) continue;
+    GS.powerUps = GS.powerUps.filter(pu => {
+      const cx = player.x + player.hitbox.width/2;
+      const cy = player.y + player.hitbox.height/2;
+      const dx = pu.x - cx, dy = pu.y - cy;
+      if (Math.sqrt(dx*dx+dy*dy) < POWERUP_RADIUS + 22) {
+        applyPowerUp(player, pu);
+        return false;
+      }
+      return true;
+    });
+  }
+}
+
+function applyPowerUp(player, pu) {
+  player.powerUp = { type: pu.type, timer: POWERUP_DURATION };
+  // Permanent stat boost — no cap, small increments
+  const _statKeys = ['projectileSpeedMult','projectileCooldownMult','dashSpeedMult','dashCooldownMult','shieldRegenMult'];
+  const _mults    = [1.04, 0.96, 1.04, 0.96, 1.05];
+  const _labels   = ['Proj Speed +4%','Proj CD -4%','Dash Speed +4%','Dash CD -4%','Shield Regen +5%'];
+  const _idx = Math.floor(Math.random() * _statKeys.length);
+  player.statMods[_statKeys[_idx]] *= _mults[_idx];
+  GS.floatTexts.push({ x:player.x + player.hitbox.width/2, y:player.y - 60, text:`P${player.id} BOOST: ${_labels[_idx]}`, color:'#ffdd44', life:1.4, maxLife:1.4, size:16 });
+}
+
+const PU_LABEL = {
+  constantSpeedSurge: 'Constant-Speed Surge',
+  curveAmplifier:     'Curve Amplifier',
+  sampleDensityBoost: 'Sample Density Boost',
+};
+const PU_COL = {
+  constantSpeedSurge: '#00ffcc',
+  curveAmplifier:     '#cc44ff',
+  sampleDensityBoost: '#44ff88',
+};
+const PU_ICON = {
+  constantSpeedSurge: 'SPD',
+  curveAmplifier:     '~',
+  sampleDensityBoost: 'N+',
+};
+
+function drawPowerUp(c, pu) {
+  const { x, y, type, glowPhase } = pu;
+  const r = POWERUP_RADIUS;
+  const col = PU_COL[type] || '#ffffff';
+  const pulse = 0.55 + 0.45 * Math.sin(glowPhase);
+  c.save();
+  c.shadowBlur = 18 * pulse; c.shadowColor = col;
+  c.beginPath(); c.arc(x, y, r, 0, Math.PI*2);
+  c.fillStyle = col + '44';
+  c.fill();
+  c.strokeStyle = col; c.lineWidth = 2.5; c.stroke();
+  c.shadowBlur = 0;
+  c.fillStyle = '#fff'; c.font = 'bold 13px monospace'; c.textAlign = 'center';
+  c.fillText(PU_ICON[type] || '?', x, y + 5);
+  c.restore();
+}
+
+function stepAbility(player, dt) {
+  const ab = player.ability;
+  if (!ab.active || ab.type !== 'dash') return;
+  const prevDist = ab.distanceTraveled;
+  ab.distanceTraveled += ab.speed * dt;
+  const tl = totalLen(ab.pathData, ab.mode);
+  if (ab.distanceTraveled >= tl) {
+    const p = posOnPath(ab.pathData, tl, ab.mode);
+    player.x = p.x - player.hitbox.width/2;
+    player.y = p.y - player.hitbox.height/2;
+    ab.active = false; ab.type = null;
+    player.vy = 0;
+  } else {
+    const p    = posOnPath(ab.pathData, ab.distanceTraveled, ab.mode);
+    const prevP = posOnPath(ab.pathData, prevDist, ab.mode);
+    const adx = p.x - prevP.x, ady = p.y - prevP.y;
+    player.x = p.x - player.hitbox.width/2;
+    player.y = p.y - player.hitbox.height/2;
+    statsInfo.arcLength    = ab.pathData.totalLength;
+    statsInfo.sampledCount = ab.pathData.curvePoints.length;
+    statsInfo.distance     = ab.distanceTraveled;
+    statsInfo.speed        = ab.speed;
+    statsInfo.actualSpeed  = dt > 0 ? Math.sqrt(adx*adx+ady*ady)/dt : ab.speed;
+  }
+}
+
+function rebuildBouncePath(proj) {
+  const opp = GS.players.find(p => p.id !== proj.ownerId);
+  if (!opp) return null;
+  const tx = opp.x + opp.hitbox.width / 2;
+  const ty = opp.y + opp.hitbox.height / 2;
+  const fx = tx >= proj.x ? 1 : -1;
+  const arcH = 70 + Math.random() * 90;
+  return makeProjectilePath(proj.x, proj.y, tx, ty, fx, arcH, STEPS_PER_SEG);
+}
+
+function spawnBounceSpark(x, y) {
+  for (let i = 0; i < 8; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 110 + Math.random() * 130;
+    GS.hitSparks.push({ x, y, vx:Math.cos(angle)*spd, vy:Math.sin(angle)*spd, life:0.22, maxLife:0.22 });
+  }
+}
+
+function triggerHeavyBurst(proj, excludePlayerId) {
+  const cx = proj.x, cy = proj.y;
+  GS.hitSparks.push({ x:cx, y:cy, vx:0, vy:0, life:0.38, maxLife:0.38, explRing:true, maxRadius:HEAVY_IMPACT_RADIUS });
+  for (let i = 0; i < 14; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 170 + Math.random() * 200;
+    GS.hitSparks.push({ x:cx, y:cy, vx:Math.cos(angle)*spd, vy:Math.sin(angle)*spd, life:0.40, maxLife:0.40 });
+  }
+  triggerScreenShake(4, 0.14);
+  for (const player of GS.players) {
+    if (player.invulnTimer > 0) continue;
+    if (player.id === proj.ownerId) continue;
+    if (excludePlayerId && player.id === excludePlayerId) continue;
+    const pcx = player.x + player.hitbox.width / 2, pcy = player.y + player.hitbox.height / 2;
+    const ddx = pcx - cx, ddy = pcy - cy;
+    if (Math.sqrt(ddx*ddx + ddy*ddy) < HEAVY_IMPACT_RADIUS) {
+      applyGuardedHit(player, cx, proj.ownerId, {
+        damage:HEAVY_IMPACT_DAMAGE, knockbackX:HEAVY_IMPACT_KNOCKBACK,
+        knockbackY:-80, stun:HEAVY_IMPACT_STUN, type:'heavy'
+      }, false, null, { allowParry: false });
+    }
+  }
+  for (let i = 0; i < HEAVY_SHARD_COUNT; i++) {
+    const ang = (i / HEAVY_SHARD_COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+    const stx = cx + Math.cos(ang) * HEAVY_SHARD_PATH_LENGTH;
+    const sty = cy + Math.sin(ang) * HEAVY_SHARD_PATH_LENGTH;
+    const sf = Math.cos(ang) >= 0 ? 1 : -1;
+    const shardPath = makeProjectilePath(cx, cy, stx, sty, sf, 35 + Math.random() * 65, STEPS_PER_SEG);
+    GS.projectiles.push({
+      active:true, ownerId:proj.ownerId, x:cx, y:cy,
+      pathData:shardPath, distanceTraveled:0,
+      speed:HEAVY_SHARD_SPEED, mode:proj.mode,
+      damage:HEAVY_SHARD_DAMAGE, hitRadius:HEAVY_SHARD_RADIUS,
+      shotType:'spread',
+      canImpact:false, bouncesRemaining:0, isShard:true, generation:1, justBounced:false,
+    });
+  }
+}
+
+function triggerProjectileImpact(proj, reason, hitPlayerId) {
+  if (!proj.active) return;
+  if (proj.shotType === 'heavy' && !proj.isShard) {
+    triggerHeavyBurst(proj, reason === 'playerHit' ? hitPlayerId : null);
+    proj.active = false;
+  } else if ((proj.shotType === 'twin' || proj.shotType === 'spread') && !proj.isShard && proj.bouncesRemaining > 0 && reason === 'end') {
+    const newPath = rebuildBouncePath(proj);
+    if (newPath) {
+      proj.pathData = newPath;
+      proj.distanceTraveled = 0;
+      proj.bouncesRemaining--;
+      proj.justBounced = true;
+      spawnBounceSpark(proj.x, proj.y);
+    } else {
+      proj.active = false;
+    }
+  } else {
+    proj.active = false;
+  }
+}
+
+function stepProjectile(proj, dt) {
+  const prevDist = proj.distanceTraveled;
+  proj.distanceTraveled += proj.speed * dt;
+  const tl = totalLen(proj.pathData, proj.mode);
+  if (proj.distanceTraveled >= tl) { triggerProjectileImpact(proj, 'end', null); return; }
+  const p    = posOnPath(proj.pathData, proj.distanceTraveled, proj.mode);
+  const prevP = posOnPath(proj.pathData, prevDist, proj.mode);
+  const adx = p.x - prevP.x, ady = p.y - prevP.y;
+  proj.x = p.x; proj.y = p.y;
+  statsInfo.arcLength    = proj.pathData.totalLength;
+  statsInfo.sampledCount = proj.pathData.curvePoints.length;
+  statsInfo.distance     = proj.distanceTraveled;
+  statsInfo.speed        = proj.speed;
+  statsInfo.actualSpeed  = dt > 0 ? Math.sqrt(adx*adx+ady*ady)/dt : proj.speed;
+}
+
+// =====================================================
+// 9. COMPARISON / DEMO LAB SYSTEM
+// =====================================================
+
+const DEMO_HW = DESIGN_WIDTH / 2;  // half-width
+
+function restartDemo() {
+  DS.timer = 0;
+  const comp = DS.comparison;
+
+  if (comp === 'powerups') {
+    DS.leftEnt = null; DS.rightEnt = null;
+    if (!DS.puShowcase) {
+      DS.puShowcase = { module:'curveAmplifier', slider:0.5, distance:0, actualSpeed:0, cachedPath:null, cachedModule:null, cachedSlider:null };
+    } else {
+      DS.puShowcase.distRaw = 0; DS.puShowcase.distMethod = 0;
+    }
+    return;
+  }
+
+  if (comp === 'impact') {
+    const impType = (DS.impactShowcase && DS.impactShowcase.type) ? DS.impactShowcase.type : 'heavy';
+
+    // === Left panel: raw (straight-line) primary path ===
+    const leftPath = makeProjectilePath(130, 740, DEMO_HW - 200, 740, 1, 160, STEPS_PER_SEG);
+    // Actual left endpoint from waypoints
+    const leftEndX = DEMO_HW - 200, leftEndY = 740;
+
+    // Raw left effects per shot type
+    let leftShardEndpoints = [];
+    let leftBouncePaths = [];
+    if (impType === 'heavy') {
+      // 6 straight-ray endpoints radiating from burst center (no Catmull-Rom)
+      for (let i = 0; i < HEAVY_SHARD_COUNT; i++) {
+        const ang = (i / HEAVY_SHARD_COUNT) * Math.PI * 2;
+        leftShardEndpoints.push({
+          x: leftEndX + Math.cos(ang) * 130,
+          y: leftEndY + Math.sin(ang) * 130,
+        });
+      }
+    } else if (impType === 'twin') {
+      // Two abrupt straight bounces (no arc, no Catmull-Rom)
+      const lb1End = { x: 200, y: 530 };
+      const lb2End = { x: DEMO_HW - 140, y: 740 };
+      leftBouncePaths = [
+        { linearSegments: [{ x: leftEndX, y: leftEndY }, lb1End] },
+        { linearSegments: [lb1End, lb2End] },
+      ];
+    } else { // spread
+      // One abrupt straight bounce
+      const lb1End = { x: 190, y: 590 };
+      leftBouncePaths = [
+        { linearSegments: [{ x: leftEndX, y: leftEndY }, lb1End] },
+      ];
+    }
+
+    // === Right panel: Catmull-Rom primary path + numerical impact ===
+    const rightPrimary = makeProjectilePath(DEMO_HW + 130, 740, DESIGN_WIDTH - 200, 740, 1, 160, STEPS_PER_SEG);
+    const endPt = rightPrimary.curvePoints[rightPrimary.curvePoints.length - 1];
+    const shardPaths = [], bouncePaths = [];
+    if (impType === 'heavy') {
+      for (let i = 0; i < HEAVY_SHARD_COUNT; i++) {
+        const ang = (i / HEAVY_SHARD_COUNT) * Math.PI * 2;
+        const stx = endPt.x + Math.cos(ang) * HEAVY_SHARD_PATH_LENGTH;
+        const sty = endPt.y + Math.sin(ang) * HEAVY_SHARD_PATH_LENGTH;
+        shardPaths.push(makeProjectilePath(endPt.x, endPt.y, stx, sty, Math.cos(ang)>=0?1:-1, 30 + i*12, STEPS_PER_SEG));
+      }
+    } else if (impType === 'twin') {
+      const b1 = makeProjectilePath(endPt.x, endPt.y, DEMO_HW + 200, 520, -1, 110, STEPS_PER_SEG);
+      const b1e = b1.curvePoints[b1.curvePoints.length - 1];
+      const b2 = makeProjectilePath(b1e.x, b1e.y, DESIGN_WIDTH - 180, 740, 1, 75, STEPS_PER_SEG);
+      bouncePaths.push(b1, b2);
+    } else {
+      bouncePaths.push(makeProjectilePath(endPt.x, endPt.y, DEMO_HW + 260, 550, -1, 90, STEPS_PER_SEG));
+    }
+
+    DS.impactShowcase = {
+      type: impType,
+      // Left panel state
+      leftDist: 0, leftPhase: 'primary', leftDone: false,
+      leftBurstTimer: 0,
+      leftActiveBouncePath: 0, leftBounceActiveDist: 0,
+      leftPath, leftShardEndpoints, leftBouncePaths,
+      // Right panel state
+      rightDist: 0, rightPhase: 'primary',
+      burstTimer: 0,
+      rightPrimary, bouncePaths, shardPaths,
+      rightActiveBouncePath: 0, rightBounceActiveDist: 0,
+    };
+    DS.leftEnt = null; DS.rightEnt = null;
+    return;
+  }
+
+  if (comp === 'meteor') {
+    // Left panel: 4 waypoints in x:[100..870], linear mode — angular, equal-time movement
+    const lwpts = [{x:100,y:80},{x:250,y:260},{x:650,y:510},{x:870,y:870}];
+    const lcpts = buildCurve(lwpts, STEPS_PER_SEG);
+    const larcs = computeArcLengths(lcpts);
+    const lpd = { waypoints:lwpts, curvePoints:lcpts, arcLengths:larcs, totalLength:larcs[larcs.length-1], linearSegments:lwpts };
+    // Right panel: same shape offset into right half, full method — smooth + constant-speed
+    const rwpts = lwpts.map(p => ({x:p.x+DEMO_HW, y:p.y}));
+    const rcpts = buildCurve(rwpts, STEPS_PER_SEG);
+    const rarcs = computeArcLengths(rcpts);
+    const rpd = { waypoints:rwpts, curvePoints:rcpts, arcLengths:rarcs, totalLength:rarcs[rarcs.length-1], linearSegments:rwpts };
+    const rightMode = GS.methodMode === 'linear' ? 'full' : GS.methodMode;
+    DS.leftEnt  = { x:lwpts[0].x, y:lwpts[0].y, distanceTraveled:0, pathData:lpd, mode:'linear',  speed:680, done:false, type:'meteor', warningTimer:1.5 };
+    DS.rightEnt = { x:rwpts[0].x, y:rwpts[0].y, distanceTraveled:0, pathData:rpd, mode:rightMode, speed:680, done:false, type:'meteor', warningTimer:1.5 };
+    return;
+  }
+
+  // Left panel (linear mode) — entities live in x:[50..DEMO_HW-50]
+  const lp = { x:120, y:820, hitbox:{width:40,height:70}, facing:1 };
+  const lt = { x:DEMO_HW-220, y:820, hitbox:{width:40,height:70}, facing:1 };
+
+  // Right panel (full mode) — entities live in x:[DEMO_HW+50..DESIGN_WIDTH-50]
+  const rp = { x:DEMO_HW+120, y:820, hitbox:{width:40,height:70}, facing:1 };
+  const rt = { x:DESIGN_WIDTH-220, y:820, hitbox:{width:40,height:70}, facing:1 };
+
+  const lpx = lp.x+20, lpy = lp.y+35, ltx = lt.x+20, lty = lt.y+35;
+  const rpx = rp.x+20, rpy = rp.y+35, rtx = rt.x+20, rty = rt.y+35;
+
+  let lpd, rpd;
+  if (comp === 'dash') {
+    lpd = makeDashPathDir(lpx, lpy, 1, 460);
+    rpd = makeDashPathDir(rpx, rpy, 1, 460);
+  } else {
+    lpd = makeProjectilePath(lpx, lpy, ltx, lty, 1);
+    rpd = makeProjectilePath(rpx, rpy, rtx, rty, 1);
+  }
+
+  const rightMode = GS.methodMode === 'linear' ? 'full' : GS.methodMode;
+  DS.leftEnt  = { x:lpx, y:lpy, distanceTraveled:0, pathData:lpd, mode:'linear',   speed:comp==='dash'?650:540, done:false, type:comp };
+  DS.rightEnt = { x:rpx, y:rpy, distanceTraveled:0, pathData:rpd, mode:rightMode,  speed:comp==='dash'?650:540, done:false, type:comp };
+}
+
+function stepDemoEnt(ent, dt) {
+  if (ent.done) return;
+  if (ent.warningTimer !== undefined && ent.warningTimer > 0) { ent.warningTimer -= dt; return; }
+  ent.distanceTraveled += ent.speed * dt;
+  const tl = totalLen(ent.pathData, ent.mode);
+  if (ent.distanceTraveled >= tl) { ent.distanceTraveled = tl; ent.done = true; return; }
+  const p = posOnPath(ent.pathData, ent.distanceTraveled, ent.mode);
+  ent.x = p.x; ent.y = p.y;
+}
+
+function updateImpactShowcase(dt) {
+  const sh = DS.impactShowcase;
+  if (!sh) return;
+  const ISPEED = 460;
+
+  // === Left panel (raw) ===
+  if (sh.leftPhase === 'primary') {
+    sh.leftDist += ISPEED * dt;
+    const lTotal = linearSegLen(sh.leftPath.linearSegments);
+    if (sh.leftDist >= lTotal) {
+      sh.leftDist = lTotal;
+      if (sh.type === 'heavy') {
+        sh.leftPhase = 'rawburst'; sh.leftBurstTimer = 1.5;
+      } else if (sh.leftBouncePaths && sh.leftBouncePaths.length > 0) {
+        sh.leftPhase = 'rawbounce'; sh.leftActiveBouncePath = 0; sh.leftBounceActiveDist = 0;
+      } else {
+        sh.leftPhase = 'done'; sh.leftDone = true;
+      }
+    }
+  } else if (sh.leftPhase === 'rawburst') {
+    sh.leftBurstTimer -= dt;
+    if (sh.leftBurstTimer <= 0) { sh.leftPhase = 'done'; sh.leftDone = true; }
+  } else if (sh.leftPhase === 'rawbounce') {
+    sh.leftBounceActiveDist += ISPEED * dt;
+    const curLP = sh.leftBouncePaths[sh.leftActiveBouncePath];
+    const curLLen = linearSegLen(curLP.linearSegments);
+    if (sh.leftBounceActiveDist >= curLLen) {
+      sh.leftBounceActiveDist = curLLen;
+      const nxtL = sh.leftActiveBouncePath + 1;
+      if (nxtL < sh.leftBouncePaths.length) {
+        sh.leftActiveBouncePath = nxtL; sh.leftBounceActiveDist = 0;
+      } else {
+        sh.leftPhase = 'done'; sh.leftDone = true;
+      }
+    }
+  }
+
+  // === Right panel (numerical) ===
+  if (sh.rightPhase === 'primary') {
+    sh.rightDist += ISPEED * dt;
+    if (sh.rightDist >= sh.rightPrimary.totalLength) {
+      sh.rightDist = sh.rightPrimary.totalLength;
+      if (sh.type === 'heavy') { sh.rightPhase = 'burst'; sh.burstTimer = 1.8; }
+      else if (sh.bouncePaths.length > 0) { sh.rightPhase = 'bounce'; sh.rightActiveBouncePath = 0; sh.rightBounceActiveDist = 0; }
+      else { sh.rightPhase = 'done'; }
+    }
+  } else if (sh.rightPhase === 'burst') {
+    sh.burstTimer -= dt;
+    if (sh.burstTimer <= 0) sh.rightPhase = 'done';
+  } else if (sh.rightPhase === 'bounce') {
+    sh.rightBounceActiveDist += ISPEED * dt;
+    const curP = sh.bouncePaths[sh.rightActiveBouncePath];
+    if (sh.rightBounceActiveDist >= curP.totalLength) {
+      sh.rightBounceActiveDist = curP.totalLength;
+      const nxt = sh.rightActiveBouncePath + 1;
+      if (nxt < sh.bouncePaths.length) { sh.rightActiveBouncePath = nxt; sh.rightBounceActiveDist = 0; }
+      else { sh.rightPhase = 'done'; }
+    }
+  }
+
+  if (sh.leftDone && sh.rightPhase === 'done' && DS.timer > 4.5) restartDemo();
+}
+
+function getDemoCycleDuration() {
+  if (DS.comparison === 'meteor')  return 5.0;
+  if (DS.comparison === 'impact')  return 4.5;
+  if (DS.comparison === 'powerups') return 999; // power-up showcase loops internally
+  return DS.cycleDuration;
+}
+
+function updateDemoLab(dt) {
+  if (DS.comparison === 'powerups') {
+    DS.timer += dt;
+    updatePowerUpShowcase(dt);
+    return;
+  }
+  if (DS.comparison === 'impact') {
+    DS.timer += dt;
+    updateImpactShowcase(dt);
+    return;
+  }
+  if (!DS.leftEnt) { restartDemo(); return; }
+  stepDemoEnt(DS.leftEnt, dt);
+  stepDemoEnt(DS.rightEnt, dt);
+  DS.timer += dt;
+  if (DS.timer >= getDemoCycleDuration()) restartDemo();
+}
+
+// =====================================================
+// 10. COLLISION AND HIT DETECTION
+// =====================================================
+
+function aabbOverlap(ax,ay,aw,ah, bx,by,bw,bh) {
+  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+}
+
+function checkAttack(atk, def) {
+  if (!atk.attackActive) return;
+  if (atk.attackHitIds.has(def.id)) return;
+  const aw = atk.hitbox.width, ah = atk.hitbox.height;
+  const ax = atk.x + (atk.facing > 0 ? aw : -aw);
+  if (aabbOverlap(ax, atk.y, aw, ah, def.x, def.y, def.hitbox.width, def.hitbox.height)) {
+    atk.attackHitIds.add(def.id);
+    applyGuardedHit(def, atk.x + aw / 2, atk.id, { ...HIT_DATA.attack, type:'attack' }, false, null);
+  }
+}
+
+function checkDashHit(player, opponents) {
+  if (!player.ability.active || player.ability.type !== 'dash') return;
+  for (const opp of opponents) {
+    if (opp.id === player.id) continue;
+    if (aabbOverlap(player.x, player.y, player.hitbox.width, player.hitbox.height,
+                    opp.x, opp.y, opp.hitbox.width, opp.hitbox.height)) {
+      applyGuardedHit(opp, player.x + player.hitbox.width / 2, player.id, { ...HIT_DATA.dash, type:'dash' }, false, null);
+      player.ability.active = false;
+    }
+  }
+}
+
+function checkProjHits(proj, players) {
+  if (proj.justBounced) { proj.justBounced = false; return; }
+  for (const p of players) {
+    if (p.id === proj.ownerId) continue;
+    const cx = p.x + p.hitbox.width/2, cy = p.y + p.hitbox.height/2;
+    const dx = proj.x - cx, dy = proj.y - cy;
+    if (Math.sqrt(dx*dx+dy*dy) < proj.hitRadius + 22) {
+      const st = proj.shotType || 'normal';
+      const result = applyGuardedHit(p, proj.x, proj.ownerId, { ...(HIT_DATA[st] || HIT_DATA.normal), type:st }, true, proj);
+      if (result !== 'parried') triggerProjectileImpact(proj, 'playerHit', p.id);
+      return;
+    }
+  }
+}
+
+function respawnPlayer(player) {
+  player.x = player.id===1 ? SPAWN.p1.x : SPAWN.p2.x;
+  player.y = player.id===1 ? SPAWN.p1.y : SPAWN.p2.y;
+  player.vx = 0; player.vy = 0;
+  player.health = 100;
+  player.ability = { active:false, type:null, pathData:null, distanceTraveled:0, speed:0, mode:'full' };
+  player.dashCharging = false; player.dashChargeTime = 0; player.dashPreviewPath = null;
+  player.attackActive = false; player.attackTimer = 0;
+  player.attackHitIds.clear();
+  player.invulnTimer = 1.5;
+  player.hitFlash = 0;
+  player.hitStunTimer = 0;
+  player.shield = SHIELD_MAX;
+  player.guarding = false; player.guardPressedTimer = 0; player.guardBrokenTimer = 0;
+  player.parryFlash = 0;
+}
+
+function loseStock(player, fromId) {
+  player.stocks = Math.max(0, player.stocks - 1);
+  if (player.stocks === 0) {
+    GS.winner = fromId;
+  } else {
+    respawnPlayer(player);
+  }
+}
+
+function damage(player, amount, fromId) {
+  if (player.health <= 0 || player.invulnTimer > 0) return;
+  player.health = Math.max(0, player.health - amount);
+  player.hitFlash = 0.18;
+  if (player.health === 0) loseStock(player, fromId);
+}
+
+function spawnHitSpark(x, y, type) {
+  const count = type === 'dash' ? 10 : type === 'heavy' ? 8 : 5;
+  const spd   = type === 'dash' ? 380 : type === 'heavy' ? 300 : 200;
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const s = spd * (0.5 + Math.random() * 0.5);
+    GS.hitSparks.push({ x, y, vx:Math.cos(angle)*s, vy:Math.sin(angle)*s, life:0.35, maxLife:0.35 });
+  }
+}
+
+function triggerScreenShake(strength, duration) {
+  if (strength > screenShake.strength || screenShake.timer <= 0) {
+    screenShake.strength = strength; screenShake.timer = duration;
+  }
+}
+
+function applyHit(target, sourceX, sourceId, hitData) {
+  if (target.health <= 0 || target.invulnTimer > 0) return;
+  target.health = Math.max(0, target.health - hitData.damage);
+  target.hitFlash = 0.18;
+  const dir = (target.x + target.hitbox.width / 2) >= sourceX ? 1 : -1;
+  target.vx = dir * hitData.knockbackX;
+  target.vy = hitData.knockbackY;
+  if (target.ability.active) { target.ability.active = false; target.ability.type = null; }
+  target.hitStunTimer = hitData.stun || 0;
+  spawnHitSpark(target.x + target.hitbox.width / 2, target.y + target.hitbox.height / 2, hitData.type || 'hit');
+  const shakeMap = { dash:{s:4,t:0.12}, heavy:{s:3,t:0.10}, attack:{s:2,t:0.08} };
+  const sk = shakeMap[hitData.type] || { s:1.5, t:0.07 };
+  triggerScreenShake(sk.s, sk.t);
+  if (target.health === 0) loseStock(target, sourceId);
+}
+
+function checkProjClash() {
+  const projs = GS.projectiles;
+  for (let i = 0; i < projs.length; i++) {
+    if (!projs[i].active) continue;
+    for (let j = i + 1; j < projs.length; j++) {
+      if (!projs[j].active || projs[i].ownerId === projs[j].ownerId) continue;
+      const dx = projs[i].x - projs[j].x, dy = projs[i].y - projs[j].y;
+      if (Math.sqrt(dx*dx+dy*dy) < projs[i].hitRadius + projs[j].hitRadius) {
+        spawnHitSpark((projs[i].x+projs[j].x)/2, (projs[i].y+projs[j].y)/2, 'hit');
+        triggerScreenShake(1.5, 0.06);
+        triggerProjectileImpact(projs[i], 'clash', null);
+        if (!projs[i].active) break;  // heavy burst deactivates i; stop checking i vs further j
+        triggerProjectileImpact(projs[j], 'clash', null);
+      }
+    }
+  }
+}
+
+function updateHitSparks(dt) {
+  for (const sp of GS.hitSparks) {
+    sp.x += sp.vx * dt; sp.y += sp.vy * dt;
+    sp.vx *= 0.88; sp.vy *= 0.88;
+    sp.life -= dt;
+  }
+  GS.hitSparks = GS.hitSparks.filter(sp => sp.life > 0);
+}
+
+// =====================================================
+// 10b. SHIELD AND PARRY SYSTEM
+// =====================================================
+
+function isParryActive(player) {
+  return player.guarding && player.guardPressedTimer <= PARRY_WINDOW
+      && player.shield > 0 && player.guardBrokenTimer <= 0;
+}
+
+function spawnParrySpark(x, y) {
+  for (let i = 0; i < 18; i++) {
+    const angle = (i / 18) * Math.PI * 2;
+    const s = 300 + Math.random() * 200;
+    GS.hitSparks.push({ x, y, vx:Math.cos(angle)*s, vy:Math.sin(angle)*s, life:0.55, maxLife:0.55, parry:true });
+  }
+}
+
+function spawnBlockSpark(x, y) {
+  for (let i = 0; i < 7; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const s = 120 + Math.random() * 80;
+    GS.hitSparks.push({ x, y, vx:Math.cos(angle)*s, vy:Math.sin(angle)*s, life:0.25, maxLife:0.25, block:true });
+  }
+}
+
+function reflectProjectile(proj, defender, attacker) {
+  const defCX = defender.x + defender.hitbox.width / 2;
+  const defCY = defender.y + defender.hitbox.height / 2;
+  let atkCX, atkCY;
+  if (attacker) {
+    atkCX = attacker.x + attacker.hitbox.width / 2;
+    atkCY = attacker.y + attacker.hitbox.height / 2;
+  } else {
+    const opp = GS.players.find(p => p.id !== defender.id);
+    atkCX = opp ? opp.x + opp.hitbox.width / 2 : defCX + 400 * defender.facing;
+    atkCY = opp ? opp.y + opp.hitbox.height / 2 : defCY;
+  }
+  const newFacing = atkCX >= defCX ? 1 : -1;
+  const arcH = Math.max(100, Math.abs(defCY - atkCY) * 0.4 + 120);
+  const steps = Math.max(30, STEPS_PER_SEG);
+  const mode  = proj.mode || GS.methodMode;
+  // Rebuild a fresh Catmull-Rom path from parry point toward attacker
+  const newPath = makeProjectilePath(defCX, defCY, atkCX, atkCY, newFacing, arcH, steps);
+  proj.ownerId          = defender.id;
+  proj.pathData         = newPath;
+  proj.distanceTraveled = 0;
+  proj.x = defCX; proj.y = defCY;
+  proj.speed   = proj.speed * 1.1;
+  proj.reflected = true;
+  proj.active  = true;
+}
+
+function handleParry(target, sourceId, hitData, isProj, projRef) {
+  target.parryFlash = 0.4;
+  spawnParrySpark(target.x + target.hitbox.width / 2, target.y + target.hitbox.height / 2);
+  triggerScreenShake(2.5, 0.10);
+  // Stun and push attacker back
+  const attacker = GS.players.find(p => p.id === sourceId);
+  if (attacker) {
+    const stunDur = hitData.type === 'dash' ? 0.35 : 0.25;
+    const dir = (attacker.x + attacker.hitbox.width / 2) >= (target.x + target.hitbox.width / 2) ? 1 : -1;
+    attacker.vx = dir * 220;
+    attacker.vy = -80;
+    attacker.hitStunTimer = Math.max(attacker.hitStunTimer, stunDur);
+    if (hitData.type === 'dash') { attacker.ability.active = false; attacker.ability.type = null; }
+  }
+  if (isProj && projRef) reflectProjectile(projRef, target, attacker || null);
+}
+
+function applyGuardedHit(target, sourceX, sourceId, hitData, isProj, projRef, opts) {
+  if (target.health <= 0 || target.invulnTimer > 0) return 'ignored';
+  const allowParry = !opts || opts.allowParry !== false;
+  // Perfect parry
+  if (allowParry && isParryActive(target)) {
+    handleParry(target, sourceId, hitData, isProj, projRef);
+    return 'parried';
+  }
+  // Normal block
+  if (target.guarding && target.shield > 0 && target.guardBrokenTimer <= 0) {
+    const dmg = Math.max(1, Math.round(hitData.damage * SHIELD_DAMAGE_MULT));
+    target.health = Math.max(0, target.health - dmg);
+    target.hitFlash = 0.1;
+    target.shield = Math.max(0, target.shield - hitData.damage * 1.2);
+    const dir = (target.x + target.hitbox.width / 2) >= sourceX ? 1 : -1;
+    target.vx = dir * hitData.knockbackX * SHIELD_KNOCKBACK_MULT;
+    target.vy = hitData.knockbackY * SHIELD_KNOCKBACK_MULT;
+    target.hitStunTimer = (hitData.stun || 0) * 0.5;
+    spawnBlockSpark(target.x + target.hitbox.width / 2, target.y + target.hitbox.height / 2);
+    triggerScreenShake(1, 0.05);
+    if (target.shield <= 0) {
+      target.shield = 0;
+      target.guarding = false;
+      target.guardBrokenTimer = GUARD_BREAK_STUN;
+      target.hitStunTimer = Math.max(target.hitStunTimer, GUARD_BREAK_STUN);
+      spawnHitSpark(target.x + target.hitbox.width / 2, target.y + target.hitbox.height / 2, 'dash');
+      triggerScreenShake(3, 0.15);
+    }
+    if (target.health === 0) loseStock(target, sourceId);
+    return 'blocked';
+  }
+  // Unguarded — normal hit
+  applyHit(target, sourceX, sourceId, hitData);
+  return 'hit';
+}
+
+function updateGuard(player, dt) {
+  if (player.isAI || player.isDummy) {
+    player.guarding = false; player.guardPressedTimer = 0;
+    return;
+  }
+  if (player.guardBrokenTimer > 0) {
+    player.guardBrokenTimer = Math.max(0, player.guardBrokenTimer - dt);
+    player.guarding = false; player.guardPressedTimer = 0;
+    player.shield = Math.min(SHIELD_MAX, player.shield + SHIELD_REGEN_PER_SEC * player.statMods.shieldRegenMult * 0.25 * dt);
+    return;
+  }
+  const guardKey = isDown(player.controls.guard);
+  const canGuard = player.hitStunTimer <= 0 && player.guardBrokenTimer <= 0;
+  if (guardKey && canGuard) {
+    if (!player.guarding) player.guardPressedTimer = 0; // fresh press
+    player.guarding = true;
+    player.guardPressedTimer += dt;
+    player.shield = Math.max(0, player.shield - SHIELD_DRAIN_PER_SEC * dt);
+    if (player.shield <= 0) {
+      player.shield = 0; player.guarding = false; player.guardPressedTimer = 0;
+      player.guardBrokenTimer = GUARD_BREAK_STUN;
+      player.hitStunTimer = Math.max(player.hitStunTimer, GUARD_BREAK_STUN);
+      spawnHitSpark(player.x + player.hitbox.width / 2, player.y + player.hitbox.height / 2, 'dash');
+      triggerScreenShake(3, 0.15);
+    }
+  } else {
+    player.guarding = false; player.guardPressedTimer = 0;
+    player.shield = Math.min(SHIELD_MAX, player.shield + SHIELD_REGEN_PER_SEC * player.statMods.shieldRegenMult * dt);
+  }
+}
+
+// =====================================================
+// 10c. METEOR / METHOD STORM SYSTEM
+// =====================================================
+
+function getStormLevel() {
+  const t = GS.matchTime;
+  if (t < STORM_L2_TIME) return 1;
+  if (t < STORM_L3_TIME) return 2;
+  if (t < STORM_L4_TIME) return 3;
+  return 4;
+}
+
+function getMeteorSpawnConfig() {
+  const level = getStormLevel();
+  if (level === 1) return { intervalMin:12,  intervalMax:15,  maxActive:1 };
+  if (level === 2) return { intervalMin:8,   intervalMax:11,  maxActive:2 };
+  if (level === 3) return { intervalMin:5.5, intervalMax:8,   maxActive:3 };
+  return           { intervalMin:3.8, intervalMax:5.5, maxActive:4 };
+}
+
+function triggerMeteorExplosion(cx, cy, excludeOwnerId) {
+  // Expanding blast ring
+  GS.hitSparks.push({ x:cx, y:cy, vx:0, vy:0, life:0.40, maxLife:0.40, explRing:true, maxRadius:METEOR_EXPLOSION_RADIUS });
+  // Particle sparks
+  for (let i = 0; i < 24; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 320 + Math.random() * 260;
+    GS.hitSparks.push({ x:cx, y:cy, vx:Math.cos(angle)*spd, vy:Math.sin(angle)*spd, life:0.55, maxLife:0.55, meteor:true });
+  }
+  triggerScreenShake(7.5, 0.25);
+  for (const player of GS.players) {
+    if (player.invulnTimer > 0) continue;
+    if (excludeOwnerId !== 0 && player.id === excludeOwnerId) continue;
+    const pcx = player.x + player.hitbox.width/2;
+    const pcy = player.y + player.hitbox.height/2;
+    const dx = pcx - cx, dy = pcy - cy;
+    if (Math.sqrt(dx*dx + dy*dy) < METEOR_EXPLOSION_RADIUS) {
+      applyGuardedHit(player, cx, 0, {
+        damage:METEOR_EXPLOSION_DAMAGE, knockbackX:METEOR_EXPLOSION_KNOCKBACK,
+        knockbackY:-120, stun:METEOR_EXPLOSION_STUN, type:'meteor'
+      }, false, null, { allowParry: false });
+    }
+  }
+}
+
+function updateFloatTexts(dt) {
+  for (const ft of GS.floatTexts) { ft.y -= 40 * dt; ft.life -= dt; }
+  GS.floatTexts = GS.floatTexts.filter(ft => ft.life > 0);
+}
+
+function spawnMeteor() {
+  const pd = makeMeteorPath();
+  const start = pd.curvePoints[0];
+  GS.meteors.push({
+    active:true, phase:'warning', ownerId:0, reflected:false,
+    pathData:pd, distanceTraveled:0, warningTimer:METEOR_WARNING_TIME,
+    speed:METEOR_SPEED, radius:METEOR_RADIUS, x:start.x, y:start.y,
+    color:'#ffee66', mode:'full',
+  });
+}
+
+function reflectMeteor(meteor, defender) {
+  const defCX = defender.x + defender.hitbox.width  / 2;
+  const defCY = defender.y + defender.hitbox.height / 2;
+  const opp = GS.players.find(p => p.id !== defender.id);
+  const atkCX = opp ? opp.x + opp.hitbox.width  / 2 : defCX + 500 * defender.facing;
+  const atkCY = opp ? opp.y + opp.hitbox.height / 2 : defCY;
+  const newFacing = atkCX >= defCX ? 1 : -1;
+  const arcH = Math.max(120, Math.abs(defCY - atkCY) * 0.3 + 150);
+  // Rebuild fresh Catmull-Rom path from parry point toward opponent (same pipeline as player projectiles)
+  const newPath = makeProjectilePath(defCX, defCY, atkCX, atkCY, newFacing, arcH, STEPS_PER_SEG);
+  meteor.pathData         = newPath;
+  meteor.distanceTraveled = 0;
+  meteor.x = defCX; meteor.y = defCY;
+  meteor.speed    = METEOR_SPEED * 1.1;
+  meteor.ownerId  = defender.id;
+  meteor.reflected = true;
+  meteor.color    = defender.color;
+  meteor.phase    = 'falling';
+}
+
+function updateMeteors(dt) {
+  const cfg = getMeteorSpawnConfig();
+  GS.meteorTimer -= dt;
+  if (GS.meteorTimer <= 0) {
+    const activeCount = GS.meteors.filter(m => m.active).length;
+    if (activeCount < cfg.maxActive) spawnMeteor();
+    GS.meteorTimer = cfg.intervalMin + Math.random() * (cfg.intervalMax - cfg.intervalMin);
+  }
+  for (const m of GS.meteors) {
+    if (!m.active) continue;
+    if (m.phase === 'warning') { m.warningTimer -= dt; if (m.warningTimer <= 0) m.phase = 'falling'; continue; }
+    // Move along Catmull-Rom path with arc-length reparameterization (Full mode pipeline)
+    m.distanceTraveled += m.speed * dt;
+    if (m.distanceTraveled >= m.pathData.totalLength) {
+      triggerMeteorExplosion(m.x, m.y, m.ownerId);
+      m.active = false; continue;
+    }
+    const p = getPositionAtDistance(m.pathData.curvePoints, m.pathData.arcLengths, m.distanceTraveled);
+    m.x = p.x; m.y = p.y;
+    // Collision
+    for (const player of GS.players) {
+      if (player.invulnTimer > 0) continue;
+      if (m.reflected && m.ownerId === player.id) continue;
+      const cx = player.x + player.hitbox.width/2, cy = player.y + player.hitbox.height/2;
+      const dx = m.x - cx, dy = m.y - cy;
+      if (Math.sqrt(dx*dx+dy*dy) < m.radius + 22) {
+        const result = applyGuardedHit(player, m.x, m.ownerId, { ...HIT_DATA.meteor, type:'meteor' }, false, null);
+        if (result === 'parried') { reflectMeteor(m, player); }
+        else { triggerMeteorExplosion(m.x, m.y, m.ownerId); m.active = false; }
+        break;
+      }
+    }
+  }
+  GS.meteors = GS.meteors.filter(m => m.active);
+}
+
+// =====================================================
+// 11. UPDATE LOOP
+// =====================================================
+
+let prevTime = 0;
+
+function update(ts) {
+  const dt = Math.min((ts - prevTime) / 1000, 0.05);
+  prevTime = ts;
+
+  // Menu animation — always runs so transitions play even while gameplay is frozen
+  if (UI.menuPhase === 'opening') {
+    UI.menuAnim = Math.min(1, UI.menuAnim + dt / MENU_OPEN_TIME);
+    if (UI.menuAnim >= 1) { UI.menuPhase = 'active'; UI.menuAnim = 1; }
+  } else if (UI.menuPhase === 'closing') {
+    UI.menuAnim = Math.max(0, UI.menuAnim - dt / MENU_CLOSE_TIME);
+    if (UI.menuAnim <= 0) { UI.menuPhase = 'closed'; UI.menuOpen = false; UI.menuAnim = 0; }
+  }
+  if (UI.menuPhase === 'opening' || UI.menuPhase === 'active' || UI.menuPhase === 'closing') {
+    UI.flickerPulse = Math.sin(Date.now() * 0.003) * 0.5 + 0.5;
+    if (UI.remoteTimer > 0) {
+      UI.remoteTimer = Math.max(0, UI.remoteTimer - dt);
+      if (UI.remoteTimer <= 0) { UI.remoteState = 'idle'; UI.remoteBounce = 0; }
+    }
+    if (UI.remoteState !== 'idle') {
+      UI.remoteBounce = Math.min(1, UI.remoteBounce + dt / 0.15);
+    }
+    if (UI.selectFlash > 0) UI.selectFlash = Math.max(0, UI.selectFlash - dt);
+    updateMenuEffects(dt);
+  }
+  if (UI.menuOpen) return; // paused — prevTime still advances so dt won't spike on close
+  if (GS.mode === 'demoLab') { updateDemoLab(dt); return; }
+  if (GS.winner) return;
+
+  const [p1, p2] = GS.players;
+
+  // Match timer + storm escalation
+  const _prevStormLv = getStormLevel();
+  GS.matchTime += dt;
+  GS.stormLevel = getStormLevel();
+  if (GS.stormLevel > _prevStormLv) {
+    GS.floatTexts.push({ x:DESIGN_WIDTH/2, y:DESIGN_HEIGHT/2-50, text:`STORM LEVEL ${GS.stormLevel}`, color:'#ff8833', life:2.0, maxLife:2.0, size:30 });
+    GS.floatTexts.push({ x:DESIGN_WIDTH/2, y:DESIGN_HEIGHT/2-10, text:'More meteors incoming', color:'#cc6622', life:2.0, maxLife:2.0, size:20 });
+  }
+
+  // Timers / cooldowns
+  for (const p of [p1, p2]) {
+    for (const k in p.cooldowns) { p.cooldowns[k] = Math.max(0, p.cooldowns[k] - dt); }
+    if (p.attackTimer > 0) { p.attackTimer -= dt; if (p.attackTimer <= 0) p.attackActive = false; }
+    if (p.hitFlash     > 0) p.hitFlash     -= dt;
+    if (p.invulnTimer  > 0) p.invulnTimer   -= dt;
+    if (p.hitStunTimer > 0) p.hitStunTimer = Math.max(0, p.hitStunTimer - dt);
+    if (p.parryFlash  > 0) p.parryFlash  = Math.max(0, p.parryFlash  - dt);
+    if (p.powerUp) { p.powerUp.timer -= dt; if (p.powerUp.timer <= 0) p.powerUp = null; }
+    if (p.shotEnhanceActive) {
+      p.shotEnhanceTimer -= dt;
+      if (p.shotEnhanceTimer <= 0) { p.shotEnhanceActive = false; p.shotEnhanceCooldown = SHOT_ENHANCE_COOLDOWN; }
+    } else if (p.shotEnhanceCooldown > 0) {
+      p.shotEnhanceCooldown = Math.max(0, p.shotEnhanceCooldown - dt);
+    }
+  }
+  if (screenShake.timer > 0) screenShake.timer = Math.max(0, screenShake.timer - dt);
+  updateHitSparks(dt);
+  updateFloatTexts(dt);
+
+  // Power-ups
+  updatePowerUps(dt);
+
+  // Guard update — must run before meteor collision so parry state is ready on same frame
+  updateGuard(p1, dt);
+  updateGuard(p2, dt);
+
+  // Meteor / Method Storm
+  updateMeteors(dt);
+
+  // AI update — writes aiInput before physics/ability reads
+  if (p2.isAI) updateAIPlayer(p2, p1, dt);
+
+  // Dash charge — human players only; AI uses executeDash directly
+  updateDashCharge(p1, dt);
+  if (!p2.isAI) updateDashCharge(p2, dt);
+
+  // Non-dash abilities from input
+  function inputAbilities(player, target) {
+    if (player.isDummy || player.ability.active || player.hitStunTimer > 0 || player.guarding || player.guardBrokenTimer > 0) return;
+    if (getInput(player, 'projectile') && player.cooldowns.projectile <= 0) tryProjectile(player, target);
+    if (getInput(player, 'attack') && player.attackTimer <= 0) {
+      player.attackActive = true; player.attackTimer = 0.22;
+      player.attackHitIds.clear();
+    }
+  }
+  inputAbilities(p1, p2);
+  inputAbilities(p2, p1);
+
+  // Jumps
+  tryJump(p1);
+  tryJump(p2);
+
+  // Physics
+  physicsStep(p1, dt);
+  physicsStep(p2, dt);
+
+  // Ability movement
+  stepAbility(p1, dt);
+  stepAbility(p2, dt);
+
+  // Projectiles
+  for (const proj of GS.projectiles) stepProjectile(proj, dt);
+  GS.projectiles = GS.projectiles.filter(p => p.active);
+
+  // Hits
+  checkAttack(p1, p2);
+  checkAttack(p2, p1);
+  checkDashHit(p1, GS.players);
+  checkDashHit(p2, GS.players);
+  checkProjClash();
+  for (const proj of GS.projectiles) checkProjHits(proj, GS.players);
+  GS.projectiles = GS.projectiles.filter(p => p.active);
+
+  // Auto-face opponent (skip during dash charge so player can steer direction)
+  if (!p1.ability.active && !p1.dashCharging) p1.facing = p2.x > p1.x ? 1 : -1;
+  if (!p2.isDummy && !p2.isAI && !p2.ability.active && !p2.dashCharging) p2.facing = p1.x > p2.x ? 1 : -1;
+
+  GS.frameCount++;
+}
+
+// =====================================================
+// 12. RENDERING SYSTEM
+// =====================================================
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let scale=1, offX=0, offY=0;
+
+function resizeCanvas() {
+  const ww = window.innerWidth, wh = window.innerHeight;
+  const ar = DESIGN_WIDTH / DESIGN_HEIGHT;
+  if (ww/wh > ar) { scale = wh/DESIGN_HEIGHT; offX = (ww - DESIGN_WIDTH*scale)/2; offY = 0; }
+  else            { scale = ww/DESIGN_WIDTH;  offX = 0; offY = (wh - DESIGN_HEIGHT*scale)/2; }
+  canvas.width = ww; canvas.height = wh;
+}
+window.addEventListener('resize', resizeCanvas);
+
+function withVirtual(fn) {
+  ctx.save();
+  let shakeX = 0, shakeY = 0;
+  if (screenShake.timer > 0) {
+    shakeX = (Math.random() - 0.5) * 2 * screenShake.strength;
+    shakeY = (Math.random() - 0.5) * 2 * screenShake.strength;
+  }
+  ctx.translate(offX + shakeX * scale, offY + shakeY * scale);
+  ctx.scale(scale, scale);
+  fn(ctx);
+  ctx.restore();
+}
+
+// --- Named draw functions (required by spec) ---
+
+function drawArena(c) {
+  if (loadedAssets.arenaBackground) {
+    c.drawImage(loadedAssets.arenaBackground, 0, 0, DESIGN_WIDTH, DESIGN_HEIGHT);
+  } else {
+    const g = c.createLinearGradient(0,0,0,DESIGN_HEIGHT);
+    g.addColorStop(0, COL.bg1); g.addColorStop(1, COL.bg2);
+    c.fillStyle = g;
+    c.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT);
+    c.strokeStyle = 'rgba(80,100,160,0.08)'; c.lineWidth = 1;
+    for (let x = 0; x < DESIGN_WIDTH; x += 120) { c.beginPath(); c.moveTo(x,0); c.lineTo(x,DESIGN_HEIGHT); c.stroke(); }
+    for (let y = 0; y < DESIGN_HEIGHT; y += 120) { c.beginPath(); c.moveTo(0,y); c.lineTo(DESIGN_WIDTH,y); c.stroke(); }
+  }
+  for (const plat of PLATFORMS) {
+    if (loadedAssets.platform) {
+      c.drawImage(loadedAssets.platform, plat.x, plat.y, plat.width, plat.height);
+    } else {
+      c.fillStyle = COL.plat; c.fillRect(plat.x, plat.y, plat.width, plat.height);
+      c.fillStyle = COL.platTop; c.fillRect(plat.x, plat.y, plat.width, 5);
+    }
+  }
+}
+
+function drawPlayer(c, player) {
+  const { x, y, hitbox, color, hitFlash, ability, facing, isDummy, id } = player;
+  const w = hitbox.width, h = hitbox.height;
+  c.save();
+
+  // Invulnerability pulsing alpha
+  if (player.invulnTimer > 0) {
+    c.globalAlpha = 0.35 + 0.65 * Math.abs(Math.sin(player.invulnTimer * 9));
+  }
+
+  if (ability.active && ability.type === 'dash') {
+    c.shadowBlur = 24; c.shadowColor = color;
+  }
+
+  const fc = hitFlash > 0 ? '#ffffff' : color;
+  const assetKey = id === 1 ? 'player1Idle' : 'player2Idle';
+  if (loadedAssets[assetKey]) {
+    c.drawImage(loadedAssets[assetKey], x, y, w, h);
+  } else {
+    c.fillStyle = fc;
+    c.fillRect(x, y, w, h);
+    // Eye direction indicator
+    c.fillStyle = '#001122';
+    const ex = facing > 0 ? x + w*0.65 : x + w*0.1;
+    c.fillRect(ex, y+14, 7, 7);
+  }
+
+  c.globalAlpha = 1;
+
+  // Thin HP bar just above player body (below name label)
+  const hbw = w + 16, hbh = 5;
+  c.fillStyle = '#1a1a1a'; c.fillRect(x - 8, y - 10, hbw, hbh);
+  c.fillStyle = player.health > 50 ? color : player.health > 25 ? '#ddaa00' : '#cc3333';
+  c.fillRect(x - 8, y - 10, hbw * (player.health / player.maxHealth), hbh);
+
+  if (isDummy) {
+    c.fillStyle = '#999'; c.font = '16px monospace'; c.textAlign = 'center';
+    c.fillText('DUMMY', x+w/2, y-20);
+  }
+
+  // Guard broken flash (red outline)
+  if (player.guardBrokenTimer > 0) {
+    c.save();
+    c.globalAlpha = 0.35 + 0.35 * Math.abs(Math.sin(player.guardBrokenTimer * 18));
+    c.fillStyle = '#ff2200';
+    c.fillRect(x - 6, y - 6, w + 12, h + 12);
+    c.restore();
+  }
+
+  // Parry flash (white burst)
+  if (player.parryFlash > 0) {
+    c.save();
+    c.globalAlpha = (player.parryFlash / 0.4) * 0.55;
+    c.fillStyle = '#ffffff';
+    c.beginPath();
+    c.arc(x + w/2, y + h/2, Math.max(w,h) * 1.1, 0, Math.PI * 2);
+    c.fill();
+    c.restore();
+  }
+
+  // Guard bubble (shield arc around player)
+  if (player.guarding) {
+    const isParry = isParryActive(player);
+    c.save();
+    c.globalAlpha = isParry ? 0.75 : 0.42;
+    c.strokeStyle = isParry ? '#ffffff' : '#4488ff';
+    c.lineWidth = isParry ? 4 : 2.5;
+    c.shadowBlur = isParry ? 24 : 10;
+    c.shadowColor = isParry ? '#aaddff' : '#2266cc';
+    c.beginPath();
+    c.arc(x + w/2, y + h/2, Math.max(w, h) * 0.78, 0, Math.PI * 2);
+    c.stroke();
+    c.restore();
+  }
+
+  // Status labels (top, stacked: y-85=guard/parry/broken, y-68=stun)
+  if (player.guardBrokenTimer > 0) {
+    c.fillStyle = '#ff3333'; c.font = 'bold 11px monospace'; c.textAlign = 'center';
+    c.shadowBlur = 8; c.shadowColor = '#ff3333';
+    c.fillText('BROKEN', x+w/2, y-85);
+    c.shadowBlur = 0;
+  } else if (isParryActive(player)) {
+    c.fillStyle = '#ffffff'; c.font = 'bold 12px monospace'; c.textAlign = 'center';
+    c.shadowBlur = 12; c.shadowColor = '#88ccff';
+    c.fillText('PARRY!', x+w/2, y-85);
+    c.shadowBlur = 0;
+  } else if (player.guarding) {
+    c.fillStyle = '#4488ff'; c.font = 'bold 11px monospace'; c.textAlign = 'center';
+    c.shadowBlur = 6; c.shadowColor = '#4488ff';
+    c.fillText('GUARD', x+w/2, y-85);
+    c.shadowBlur = 0;
+  }
+
+  if (player.hitStunTimer > 0) {
+    c.fillStyle = '#ff4444'; c.font = 'bold 11px monospace'; c.textAlign = 'center';
+    c.shadowBlur = 6; c.shadowColor = '#ff4444';
+    c.fillText('STUN', x+w/2, y-68);
+    c.shadowBlur = 0;
+  }
+
+  // Shot enhancement badge (top slot)
+  if (player.shotEnhanceActive) {
+    const sLabel = { heavy:'HEAVY', twin:'TWIN', spread:'SPREAD' };
+    c.fillStyle = '#ffee44'; c.font = 'bold 10px monospace'; c.textAlign = 'center';
+    c.shadowBlur = 5; c.shadowColor = '#ffee44';
+    c.fillText(sLabel[player.activeShotMode] || 'ENH', x+w/2, y-52);
+    c.shadowBlur = 0;
+  }
+
+  // Power-up badge (below enhancement badge) — shows icon + remaining seconds
+  if (player.powerUp) {
+    const puCol = PU_COL[player.powerUp.type] || '#fff';
+    c.fillStyle = puCol; c.font = 'bold 11px monospace'; c.textAlign = 'center';
+    c.shadowBlur = 6; c.shadowColor = puCol;
+    c.fillText(`${PU_ICON[player.powerUp.type] || '?'} ${Math.ceil(player.powerUp.timer)}s`, x+w/2, y-38);
+    c.shadowBlur = 0;
+  }
+
+  // Dash charge ring — appears when charge >= minimum
+  if (player.dashCharging && player.dashChargeTime >= DASH_CHARGE_MIN) {
+    const ratio = Math.min(player.dashChargeTime / DASH_CHARGE_MAX, 1);
+    c.globalAlpha = 0.9; c.lineWidth = 3; c.strokeStyle = color;
+    c.beginPath();
+    c.arc(x+w/2, y-28, 14, -Math.PI/2, -Math.PI/2 + Math.PI*2*ratio);
+    c.stroke();
+    c.fillStyle = '#fff'; c.font = 'bold 12px monospace'; c.textAlign = 'center';
+    c.fillText('DASH', x+w/2, y-46);
+  }
+  c.restore();
+}
+
+function drawProjectile(c, proj) {
+  c.save();
+  const ownerCol = proj.ownerId === 1 ? COL.p1 : COL.p2;
+  const st = proj.shotType || 'normal';
+
+  if (loadedAssets.projectile) {
+    c.shadowBlur = 14; c.shadowColor = ownerCol;
+    const r = proj.hitRadius;
+    c.drawImage(loadedAssets.projectile, proj.x - r, proj.y - r, r*2, r*2);
+  } else if (st === 'heavy') {
+    // Large orb: outer shell + bright inner core, strong glow
+    c.shadowBlur = 22; c.shadowColor = ownerCol;
+    c.fillStyle = ownerCol + '55';
+    c.beginPath(); c.arc(proj.x, proj.y, proj.hitRadius * 0.85, 0, Math.PI*2); c.fill();
+    c.strokeStyle = ownerCol; c.lineWidth = 3;
+    c.beginPath(); c.arc(proj.x, proj.y, proj.hitRadius * 0.85, 0, Math.PI*2); c.stroke();
+    c.shadowBlur = 0;
+    c.fillStyle = '#ffffff';
+    c.beginPath(); c.arc(proj.x, proj.y, proj.hitRadius * 0.32, 0, Math.PI*2); c.fill();
+  } else if (st === 'twin') {
+    // Smaller orb, medium glow
+    c.shadowBlur = 10; c.shadowColor = ownerCol;
+    c.fillStyle = ownerCol;
+    c.beginPath(); c.arc(proj.x, proj.y, proj.hitRadius * 0.58, 0, Math.PI*2); c.fill();
+  } else if (st === 'spread') {
+    // Tiny orb, light glow
+    c.shadowBlur = 7; c.shadowColor = ownerCol;
+    c.fillStyle = ownerCol + 'cc';
+    c.beginPath(); c.arc(proj.x, proj.y, proj.hitRadius * 0.5, 0, Math.PI*2); c.fill();
+  } else {
+    // Normal: standard orb
+    c.shadowBlur = 14; c.shadowColor = ownerCol;
+    c.fillStyle = ownerCol;
+    c.beginPath(); c.arc(proj.x, proj.y, proj.hitRadius * 0.55, 0, Math.PI*2); c.fill();
+  }
+  c.restore();
+}
+
+function drawAbilityTrail(c, ability) {
+  if (!ability || !ability.pathData) return;
+  const pd = ability.pathData;
+  const mode = ability.mode;
+  c.save();
+  c.globalAlpha = 0.45;
+
+  if (mode === 'linear') {
+    c.strokeStyle = COL.linear; c.lineWidth = 2;
+    c.setLineDash([10, 8]);
+    c.beginPath();
+    pd.linearSegments.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+    c.stroke(); c.setLineDash([]);
+  } else {
+    c.strokeStyle = COL.spline; c.lineWidth = 2; c.setLineDash([]);
+    c.beginPath();
+    pd.curvePoints.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+    c.stroke();
+    c.globalAlpha = 0.55;
+    pd.curvePoints.forEach((p,i) => {
+      if (i % 12 === 0) {
+        c.beginPath(); c.arc(p.x, p.y, 3, 0, Math.PI*2);
+        c.fillStyle = COL.sampled; c.fill();
+      }
+    });
+  }
+
+  pd.waypoints.forEach((wp,i) => {
+    c.globalAlpha = 0.9;
+    c.beginPath(); c.arc(wp.x, wp.y, 7, 0, Math.PI*2);
+    c.fillStyle = COL.waypoint; c.fill();
+    c.fillStyle = '#000'; c.font = '13px monospace'; c.textAlign = 'center';
+    c.fillText('P'+i, wp.x, wp.y+5);
+  });
+  c.restore();
+}
+
+function drawHitboxDebug(c, entity) {
+  c.save();
+  c.strokeStyle = '#00ff00'; c.lineWidth = 2;
+  c.strokeRect(entity.x, entity.y, entity.hitbox.width, entity.hitbox.height);
+  if (entity.attackActive) {
+    const aw = entity.hitbox.width;
+    const ax = entity.x + (entity.facing>0 ? aw : -aw);
+    c.strokeStyle = '#ffff00';
+    c.strokeRect(ax, entity.y, aw, entity.hitbox.height);
+  }
+  c.restore();
+}
+
+function drawMethodOverlay(c) { renderOverlay(c); }
+
+function drawDashPreview(c, pathData, mode) {
+  if (!pathData) return;
+  c.save();
+  c.globalAlpha = 0.38;
+  if (mode === 'linear') {
+    c.strokeStyle = COL.linear; c.lineWidth = 2; c.setLineDash([8, 7]);
+    c.beginPath();
+    pathData.linearSegments.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+    c.stroke(); c.setLineDash([]);
+  } else {
+    c.strokeStyle = COL.spline; c.lineWidth = 2.5; c.setLineDash([]);
+    c.beginPath();
+    pathData.curvePoints.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+    c.stroke();
+    c.globalAlpha = 0.5;
+    pathData.curvePoints.forEach((p,i) => {
+      if (i % 12 === 0) {
+        c.beginPath(); c.arc(p.x,p.y,3,0,Math.PI*2);
+        c.fillStyle = COL.sampled; c.fill();
+      }
+    });
+  }
+  pathData.waypoints.forEach(wp => {
+    c.globalAlpha = 0.65;
+    c.beginPath(); c.arc(wp.x,wp.y,5,0,Math.PI*2);
+    c.fillStyle = COL.waypoint; c.fill();
+  });
+  c.restore();
+}
+
+function drawHitSparks(c) {
+  c.save();
+  for (const sp of GS.hitSparks) {
+    const alpha = sp.life / sp.maxLife;
+    c.globalAlpha = alpha;
+    if (sp.parry) {
+      c.fillStyle = '#aaddff';
+      c.beginPath(); c.arc(sp.x, sp.y, 4.5, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#ffffff';
+      c.beginPath(); c.arc(sp.x, sp.y, 2.2, 0, Math.PI * 2); c.fill();
+    } else if (sp.block) {
+      c.fillStyle = '#4488ff';
+      c.beginPath(); c.arc(sp.x, sp.y, 3, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#aaccff';
+      c.beginPath(); c.arc(sp.x, sp.y, 1.5, 0, Math.PI * 2); c.fill();
+    } else if (sp.explRing) {
+      const ringRatio = 1 - (sp.life / sp.maxLife);
+      const ringR = Math.max(1, (sp.maxRadius || 120) * ringRatio);
+      c.strokeStyle = '#ff8800';
+      c.lineWidth = Math.max(0.5, 7 * (sp.life / sp.maxLife));
+      c.beginPath(); c.arc(sp.x, sp.y, ringR, 0, Math.PI * 2); c.stroke();
+      c.lineWidth = 1;
+    } else if (sp.meteor) {
+      c.fillStyle = '#ff8800';
+      c.beginPath(); c.arc(sp.x, sp.y, 5, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#ffcc44';
+      c.beginPath(); c.arc(sp.x, sp.y, 2.5, 0, Math.PI * 2); c.fill();
+    } else {
+      c.fillStyle = '#ffffff';
+      c.beginPath(); c.arc(sp.x, sp.y, 3.5, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#ffcc44';
+      c.beginPath(); c.arc(sp.x, sp.y, 2, 0, Math.PI * 2); c.fill();
+    }
+  }
+  c.globalAlpha = 1;
+  c.restore();
+}
+
+function drawMeteors(c) {
+  const now = Date.now();
+  for (const m of GS.meteors) {
+    if (!m.active) continue;
+    if (m.phase === 'warning') {
+      c.save();
+      const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now / 340));
+      c.globalAlpha = 0.45 + 0.3 * pulse;
+      c.strokeStyle = '#ffee44'; c.lineWidth = 3; c.setLineDash([14, 8]);
+      c.beginPath();
+      m.pathData.curvePoints.forEach((p,i) => i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y));
+      c.stroke(); c.setLineDash([]);
+      c.globalAlpha = 0.5;
+      m.pathData.curvePoints.forEach((p,i) => { if(i%10===0){ c.beginPath(); c.arc(p.x,p.y,4,0,Math.PI*2); c.fillStyle='#ffcc00'; c.fill(); } });
+      m.pathData.waypoints.forEach((wp,i) => {
+        c.globalAlpha = 0.85;
+        c.beginPath(); c.arc(wp.x,wp.y,8,0,Math.PI*2); c.fillStyle='#ffee44'; c.fill();
+        c.fillStyle='#000'; c.font='12px monospace'; c.textAlign='center'; c.fillText('P'+i, wp.x, wp.y+4);
+      });
+      c.restore();
+    } else {
+      // Faint path trail
+      c.save(); c.globalAlpha = 0.22;
+      c.strokeStyle = '#ffcc00'; c.lineWidth = 2.5;
+      c.beginPath();
+      m.pathData.curvePoints.forEach((p,i) => i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y));
+      c.stroke(); c.restore();
+      // Meteor body
+      c.save();
+      c.shadowBlur = 30; c.shadowColor = m.color;
+      c.fillStyle = m.color;
+      c.beginPath(); c.arc(m.x, m.y, m.radius, 0, Math.PI*2); c.fill();
+      c.shadowBlur = 0;
+      c.fillStyle = '#ffffff';
+      c.beginPath(); c.arc(m.x, m.y, m.radius * 0.36, 0, Math.PI*2); c.fill();
+      c.restore();
+    }
+  }
+}
+
+function drawArenaEventBanner(c) {
+  const now = Date.now();
+  const activeMeteor = GS.meteors.find(m => m.active);
+  if (activeMeteor && activeMeteor.phase === 'warning') {
+    const pulse = 0.65 + 0.35 * Math.abs(Math.sin(now / 290));
+    c.save();
+    c.textAlign = 'center'; c.font = 'bold 28px monospace';
+    c.globalAlpha = pulse;
+    c.shadowBlur = 20; c.shadowColor = '#ffee44';
+    c.fillStyle = '#ffee66';
+    c.fillText('⚠  METHOD STORM WARNING  ⚠', DESIGN_WIDTH/2, 132);
+    c.shadowBlur = 0; c.globalAlpha = 1; c.restore();
+  } else if (!activeMeteor && GS.meteorTimer < 5) {
+    c.save();
+    c.textAlign = 'center'; c.font = '22px monospace';
+    c.fillStyle = '#887744';
+    c.fillText(`Method Storm in ${GS.meteorTimer.toFixed(1)}s`, DESIGN_WIDTH/2, 132);
+    c.restore();
+  }
+}
+
+// projectile trail — owner color for line, academic colors for sampled points and waypoints
+function drawProjTrail(c, proj) {
+  if (!proj.pathData) return;
+  const pd = proj.pathData;
+  const mode = proj.mode;
+  const ownerCol = proj.ownerId === 1 ? COL.p1 : COL.p2;
+  c.save();
+  c.globalAlpha = 0.35;
+
+  if (mode === 'linear') {
+    c.strokeStyle = ownerCol; c.lineWidth = 2; c.setLineDash([10, 8]);
+    c.beginPath();
+    pd.linearSegments.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+    c.stroke(); c.setLineDash([]);
+  } else {
+    c.strokeStyle = ownerCol; c.lineWidth = 2;
+    c.beginPath();
+    pd.curvePoints.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+    c.stroke();
+    c.globalAlpha = 0.5;
+    pd.curvePoints.forEach((p,i) => {
+      if (i % 12 === 0) {
+        c.beginPath(); c.arc(p.x,p.y,3,0,Math.PI*2);
+        c.fillStyle = COL.sampled; c.fill();
+      }
+    });
+  }
+
+  pd.waypoints.forEach((wp,i) => {
+    c.globalAlpha = 0.65;
+    c.beginPath(); c.arc(wp.x,wp.y,6,0,Math.PI*2);
+    c.fillStyle = COL.waypoint; c.fill();
+    c.fillStyle = '#000'; c.font = '11px monospace'; c.textAlign = 'center';
+    c.fillText('P'+i, wp.x, wp.y+4);
+  });
+  c.restore();
+}
+
+const SHOT_NAME = { heavy:'Heavy', twin:'Twin', spread:'Spread' };
+
+function drawPlayerHUD(c, player, isLeft) {
+  const hw = 420, hh = 158;
+  const hx = isLeft ? 16 : DESIGN_WIDTH - hw - 16;
+  const hy = DESIGN_HEIGHT - hh - 16;
+
+  c.fillStyle = 'rgba(0,0,12,0.82)';
+  c.strokeStyle = player.color + 'aa';
+  c.lineWidth = 1.5;
+  c.beginPath(); c.rect(hx, hy, hw, hh); c.fill(); c.stroke();
+
+  const tx = hx + 12;
+  let ty = hy + 20;
+
+  // Row 1: name + stocks + HP value
+  const name = player.isDummy ? 'DUMMY' : (player.isAI ? 'AI' : `P${player.id}`);
+  const stocks = '♥'.repeat(player.stocks) + '♡'.repeat(Math.max(0, 3 - player.stocks));
+  c.font = 'bold 15px monospace'; c.fillStyle = player.color; c.textAlign = 'left';
+  c.fillText(`${name}  ${stocks}   HP ${player.health}/100`, tx, ty); ty += 13;
+
+  // Row 2: HP bar
+  const bw = hw - 24;
+  c.fillStyle = '#1a1a1a'; c.fillRect(tx, ty, bw, 7);
+  c.fillStyle = player.health > 50 ? '#44cc44' : player.health > 25 ? '#ddaa00' : '#cc2222';
+  c.fillRect(tx, ty, bw * (player.health / player.maxHealth), 7); ty += 24;
+
+  // Row 3: cooldowns
+  const dashReady = player.cooldowns.dash <= 0;
+  const projReady = player.cooldowns.projectile <= 0;
+  c.font = '14px monospace';
+  c.fillStyle = dashReady ? '#44ff88' : '#777777';
+  c.fillText(dashReady ? 'Dash: READY' : `Dash: ${player.cooldowns.dash.toFixed(1)}s`, tx, ty);
+  c.fillStyle = projReady ? '#44ff88' : '#777777';
+  c.fillText(projReady ? 'Proj: READY' : `Proj: ${player.cooldowns.projectile.toFixed(1)}s`, tx + 210, ty); ty += 18;
+
+  // Row 4: shot mode
+  c.font = '14px monospace'; c.fillStyle = '#ccbbff';
+  c.fillText(`Shot Mode: ${SHOT_NAME[player.shotMode] || player.shotMode}`, tx, ty); ty += 17;
+
+  // Row 5: enhancement state
+  let enhStr, enhCol;
+  if (player.shotEnhanceActive) {
+    enhStr = `Enhance: ACTIVE ${player.shotEnhanceTimer.toFixed(1)}s [${(SHOT_NAME[player.activeShotMode] || '').toUpperCase()}]`;
+    enhCol = '#ffee44';
+  } else if (player.shotEnhanceCooldown > 0) {
+    enhStr = `Enhance: CD ${player.shotEnhanceCooldown.toFixed(1)}s`;
+    enhCol = '#666666';
+  } else {
+    enhStr = `Enhance: READY`;
+    enhCol = '#44ddff';
+  }
+  c.font = '14px monospace'; c.fillStyle = enhCol;
+  c.fillText(enhStr, tx, ty); ty += 17;
+
+  // Row 6: power-up (left) + shield status (right) — combined, no overlap
+  const _puSh = { curveAmplifier:'Curve+', sampleDensityBoost:'N+', constantSpeedSurge:'SPD' };
+  const puRowStr = player.powerUp ? `PU: ${_puSh[player.powerUp.type]||'?'} ${player.powerUp.timer.toFixed(1)}s` : 'PU: None';
+  const puRowCol = player.powerUp ? (PU_COL[player.powerUp.type]||'#fff') : '#3a3a4a';
+  const shPct = player.shield / player.maxShield;
+  let shRowStr, shRowCol;
+  if (player.guardBrokenTimer > 0)  { shRowStr=`SH:BRK ${player.guardBrokenTimer.toFixed(1)}s`; shRowCol='#cc2222'; }
+  else if (isParryActive(player))   { shRowStr='SH:PARRY!';                                       shRowCol='#ffffff'; }
+  else if (player.guarding)         { shRowStr=`SH:GUARD ${Math.round(player.shield)}%`;          shRowCol='#88aaff'; }
+  else                              { shRowStr=`SH: ${Math.round(player.shield)}%`;               shRowCol=shPct>0.6?'#3366cc':shPct>0.3?'#aaaa22':'#cc4422'; }
+  c.font = '13px monospace'; c.textAlign = 'left';
+  c.fillStyle = puRowCol; c.fillText(puRowStr, tx, ty);
+  c.fillStyle = shRowCol; c.fillText(shRowStr, tx + 210, ty);
+
+  // Row 7: compact permanent stat mods (only if any are non-default)
+  const sm = player.statMods;
+  const _hasMod = Math.abs(sm.projectileSpeedMult-1)>0.005 || Math.abs(sm.projectileCooldownMult-1)>0.005 ||
+                  Math.abs(sm.dashSpeedMult-1)>0.005 || Math.abs(sm.dashCooldownMult-1)>0.005 || Math.abs(sm.shieldRegenMult-1)>0.005;
+  if (_hasMod) {
+    ty += 15;
+    const _sp = [];
+    if (Math.abs(sm.projectileSpeedMult   -1)>0.005) _sp.push(`PS${sm.projectileSpeedMult.toFixed(2)}x`);
+    if (Math.abs(sm.projectileCooldownMult-1)>0.005) _sp.push(`PC${sm.projectileCooldownMult.toFixed(2)}x`);
+    if (Math.abs(sm.dashSpeedMult         -1)>0.005) _sp.push(`DS${sm.dashSpeedMult.toFixed(2)}x`);
+    if (Math.abs(sm.dashCooldownMult      -1)>0.005) _sp.push(`DC${sm.dashCooldownMult.toFixed(2)}x`);
+    if (Math.abs(sm.shieldRegenMult       -1)>0.005) _sp.push(`SR${sm.shieldRegenMult.toFixed(2)}x`);
+    c.font = '12px monospace'; c.fillStyle = '#88ccaa'; c.textAlign = 'left';
+    c.fillText('Stats: ' + _sp.slice(0, 3).join('  '), tx, ty);
+  }
+}
+
+function drawFloatTexts(c) {
+  c.save(); c.textAlign = 'center';
+  for (const ft of GS.floatTexts) {
+    const alpha = Math.min(1, (ft.life / ft.maxLife) * 1.5);
+    c.globalAlpha = alpha;
+    c.font = `bold ${ft.size || 18}px monospace`;
+    c.shadowBlur = 10; c.shadowColor = ft.color;
+    c.fillStyle = ft.color;
+    c.fillText(ft.text, ft.x, ft.y);
+    c.shadowBlur = 0;
+  }
+  c.globalAlpha = 1; c.restore();
+}
+
+// =====================================================
+// 12b. NEW UI HELPERS — CRT STYLE
+// =====================================================
+
+// Reusable translucent glass panel
+function drawGlassPanel(c, x, y, w, h, accentCol) {
+  c.save();
+  c.fillStyle = 'rgba(3,6,22,0.90)';
+  c.strokeStyle = accentCol || '#1a2a4a';
+  c.lineWidth = 1.5;
+  c.beginPath(); c.roundRect(x, y, w, h, 6); c.fill(); c.stroke();
+  c.strokeStyle = (accentCol || '#003366') + '66';
+  c.lineWidth = 1;
+  c.beginPath(); c.moveTo(x+10, y+1.5); c.lineTo(x+w-10, y+1.5); c.stroke();
+  c.restore();
+}
+
+// Gameplay CRT overlay — scanlines + vignette + edge tint. Tune via GAMEPLAY_CRT constants.
+function drawCRTOverlay(c) {
+  if (!GAMEPLAY_CRT.enabled) return;
+  const W = DESIGN_WIDTH, H = DESIGN_HEIGHT;
+  c.save();
+  c.globalAlpha = GAMEPLAY_CRT.scanlineAlpha;
+  c.fillStyle = '#000';
+  for (let sy = 0; sy < H; sy += 4) c.fillRect(0, sy, W, 2);
+  c.globalAlpha = 1;
+  const vg = c.createRadialGradient(W/2, H/2, H*0.28, W/2, H/2, H*0.82);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, `rgba(0,0,14,${(GAMEPLAY_CRT.vignetteAlpha * 2.67).toFixed(2)})`);
+  c.fillStyle = vg; c.fillRect(0, 0, W, H);
+  if (GAMEPLAY_CRT.edgeTintAlpha > 0) {
+    const et = c.createRadialGradient(W/2, H/2, H*0.4, W/2, H/2, H*0.88);
+    et.addColorStop(0, 'rgba(0,0,0,0)');
+    et.addColorStop(1, `rgba(0,20,60,${GAMEPLAY_CRT.edgeTintAlpha})`);
+    c.fillStyle = et; c.fillRect(0, 0, W, H);
+  }
+  c.restore();
+}
+
+// ── Patch K: Four-terminal gameplay HUD ─────────────────────────────────────
+
+// Text progress bar: filled=█ empty=░
+function makeTextBar(ratio, len) {
+  len = len || 10;
+  const n = Math.round(Math.max(0, Math.min(1, ratio)) * len);
+  return '█'.repeat(n) + '░'.repeat(len - n);
+}
+
+// Base terminal panel background + border
+function drawTerminalWindow(c, x, y, w, h, accentColor) {
+  c.save();
+  c.fillStyle = 'rgba(4,7,22,0.93)';
+  c.strokeStyle = accentColor || '#1e3a5a';
+  c.lineWidth = 1.5;
+  c.beginPath(); c.roundRect(x, y, w, h, 5); c.fill(); c.stroke();
+  c.restore();
+}
+
+// Terminal title bar: traffic-light dots + title + separator + small ▲ mark
+function drawTerminalHeader(c, x, y, w, title, accentColor) {
+  const hh = 21;
+  c.save();
+  c.fillStyle = 'rgba(0,0,0,0.30)';
+  c.beginPath(); c.roundRect(x+1, y+1, w-2, hh-1, [4,4,0,0]); c.fill();
+  c.strokeStyle = (accentColor||'#1e3a5a') + 'bb';
+  c.lineWidth = 1;
+  c.beginPath(); c.moveTo(x+1, y+hh); c.lineTo(x+w-1, y+hh); c.stroke();
+  const cy = y + hh/2 + 0.5;
+  [['#ff5f57',x+12],['#ffbd2e',x+26],['#28c840',x+40]].forEach(([col,cx])=>{
+    c.fillStyle = col; c.beginPath(); c.arc(cx, cy, 4.5, 0, Math.PI*2); c.fill();
+  });
+  c.fillStyle = (accentColor||'#4488bb') + '55';
+  c.beginPath(); c.moveTo(x+56,cy+5); c.lineTo(x+61,cy-4); c.lineTo(x+66,cy+5); c.closePath(); c.fill();
+  c.font = 'bold 11px monospace'; c.fillStyle = accentColor||'#5588bb';
+  c.textAlign = 'left'; c.fillText(title, x+72, cy+4);
+  c.restore();
+}
+
+// Top-left terminal: game/session status
+function drawTopLeftTerminal(c) {
+  const { x, y, w, h } = HUD_TOP_LEFT;
+  const hh = 21;
+  drawTerminalWindow(c, x, y, w, h, '#2255aa');
+  drawTerminalHeader(c, x, y, w, '[session@methodlab ~]$ monitor', '#4488cc');
+  const tx = x+14, lh = 22;
+  let ty = y + hh + 17;
+  const modeNames = { versus:'VS LOCAL', practice:'PRACTICE', vsai:'VS AI', demoLab:'DEMO LAB' };
+  const stLv = getStormLevel(), mCfg = getMeteorSpawnConfig();
+  const mActive = GS.meteors.filter(m=>m.active).length;
+  const puCount = GS.powerUps.length;
+  const mMin = Math.floor(GS.matchTime/60), mSec = Math.floor(GS.matchTime%60);
+  function tRow(k, v, kC, vC) {
+    c.font='bold 14px monospace'; c.fillStyle=kC; c.textAlign='left'; c.fillText(k, tx, ty);
+    c.font='14px monospace'; c.fillStyle=vC; c.fillText(v, tx+88, ty); ty+=lh;
+  }
+  tRow('MODE:',  modeNames[GS.mode]||GS.mode.toUpperCase(),                  '#5599cc', '#aaddff');
+  tRow('MATCH:', `${mMin}:${mSec.toString().padStart(2,'0')}`,                '#446688', '#88aacc');
+  tRow('STORM:', `LV ${stLv}  meteors ${mActive}/${mCfg.maxActive}`,          stLv>=3?'#ff8833':'#446688', stLv>=3?'#ffaa55':'#88aacc');
+  tRow('FIELD:', `${puCount} power-up${puCount!==1?'s':''} on field`,         '#4a3a66', '#cc88ff');
+  c.font='11px monospace'; c.fillStyle='#1e3040'; c.textAlign='left';
+  c.fillText('ESC menu  TAB demo  R reset  1/2/3 method', tx, ty+2);
+}
+
+// Top-right terminal: numerical method pipeline status
+function drawTopRightTerminal(c) {
+  const { x, y, w, h } = HUD_TOP_RIGHT;
+  const hh = 21;
+  const mm = GS.methodMode, isCat = mm!=='linear', isFull = mm==='full';
+  drawTerminalWindow(c, x, y, w, h, '#1a4a2a');
+  drawTerminalHeader(c, x, y, w, '[method@lab ~]$ pipeline', '#33aa66');
+  const tx = x+14, lh = 22;
+  let ty = y + hh + 17;
+  const mmLabel = { linear:'LINEAR (no method)', catmull:'CATMULL-ROM only', full:'FULL NUMERICAL' };
+  const mmColor = { linear:'#dd4444', catmull:'#ddcc22', full:'#33ee77' };
+  function tRow(k, v, kC, vC) {
+    c.font='bold 14px monospace'; c.fillStyle=kC; c.textAlign='left'; c.fillText(k, tx, ty);
+    c.font='14px monospace'; c.fillStyle=vC; c.fillText(v, tx+88, ty); ty+=lh;
+  }
+  tRow('METHOD:', mmLabel[mm]||mm,                                 '#33aa66', mmColor[mm]||'#aaccaa');
+  tRow('CURVE:',  isCat?'Catmull-Rom  ON':'off',                   '#226644', isCat?'#44ee88':'#cc4444');
+  tRow('ARC LEN:',isFull?`${statsInfo.arcLength.toFixed(0)} px`:'off', '#226644', isFull?'#44ee88':'#cc4444');
+  tRow('ABILITY:',statsInfo.abilityLabel||'—',                     '#226644', '#00ddcc');
+  c.font='11px monospace'; c.fillStyle='#1a2e20'; c.textAlign='left';
+  c.fillText(`samples: ${statsInfo.sampledCount} pts   speed: ${statsInfo.actualSpeed>0?statsInfo.actualSpeed.toFixed(0):statsInfo.speed} px/s`, tx, ty+2);
+}
+
+// Per-player bottom terminal (replaces drawPlayerStatusStrip)
+function drawPlayerTerminal(c, player, isLeft) {
+  const { x, y, w, h } = isLeft ? HUD_P1 : HUD_P2;
+  const hh = 21;
+  const pName = player.isDummy?'dummy':(player.isAI?'ai':`p${player.id}`);
+  drawTerminalWindow(c, x, y, w, h, player.color+'99');
+  drawTerminalHeader(c, x, y, w, `[${pName}@methodlab ~]$ status`, player.color);
+  // Compact layout (Patch K.1): 8-char bars, tighter spacing, slightly smaller fonts
+  const tx = x+12, lh = 20, barX = tx+66, valX = tx+148;
+  let ty = y + hh + 15;
+
+  function tRow(label, bar, val, lC, bC) {
+    c.font='bold 14px monospace'; c.fillStyle=lC; c.textAlign='left'; c.fillText(label, tx, ty);
+    c.font='14px monospace'; c.fillStyle=bC; c.fillText(bar, barX, ty);
+    c.font='13px monospace'; c.fillStyle=bC; c.fillText(val, valX, ty);
+    ty += lh;
+  }
+
+  // LIVES
+  c.font='bold 15px monospace'; c.fillStyle=player.color; c.textAlign='left';
+  c.fillText(`LIVES: ${player.stocks}`, tx, ty); ty += lh;
+
+  // HP
+  const hpRatio = player.health/player.maxHealth;
+  const hpCol = player.health>50?'#33dd66':player.health>25?'#ddcc22':'#dd3333';
+  tRow('HP:',     makeTextBar(hpRatio, 8), `${player.health}`, '#8899aa', hpCol);
+
+  // SHIELD
+  const shFrac = player.shield/player.maxShield;
+  let shCol = shFrac>0.5?'#4488cc':shFrac>0.3?'#ddaa22':'#dd3333';
+  if (player.guardBrokenTimer>0)    shCol='#dd2222';
+  else if (isParryActive(player))   shCol='#eef8ff';
+  else if (player.guarding)         shCol='#66aaff';
+  tRow('SHLD:',   makeTextBar(shFrac, 8), `${Math.round(player.shield)}%`, '#8899aa', shCol);
+
+  // DASH
+  const dReady = player.cooldowns.dash<=0;
+  const dRatio  = dReady?1:Math.max(0,1-player.cooldowns.dash/CD_MAX.dash);
+  tRow('DASH:',   makeTextBar(dRatio, 8),  dReady?'RDY':`${player.cooldowns.dash.toFixed(1)}s`,  '#8899aa', dReady?'#33dd66':'#ddaa22');
+
+  // PROJ
+  const pjReady = player.cooldowns.projectile<=0;
+  const pjRatio  = pjReady?1:Math.max(0,1-player.cooldowns.projectile/CD_MAX.projectile);
+  tRow('PROJ:',   makeTextBar(pjRatio, 8), pjReady?'RDY':`${player.cooldowns.projectile.toFixed(1)}s`, '#8899aa', pjReady?'#33dd66':'#ddaa22');
+
+  // SHOT
+  const shotFull = {heavy:'HEAVY',twin:'TWIN',spread:'SPREAD'}[player.shotMode]||'NORMAL';
+  const enh = player.shotEnhanceActive;
+  c.font='bold 14px monospace'; c.fillStyle='#8899aa'; c.textAlign='left'; c.fillText('SHOT:', tx, ty);
+  c.font='14px monospace'; c.fillStyle=enh?'#ffee44':'#aabbcc';
+  c.fillText(shotFull+(enh?'  ⚡ENH':''), barX, ty); ty+=lh;
+
+  // STATE line
+  const parts=[];
+  if (player.powerUp) {
+    const pn={curveAmplifier:'CURVE+',sampleDensityBoost:'N+',constantSpeedSurge:'SPD+'}[player.powerUp.type]||'PU';
+    parts.push({t:`PU:${pn} ${player.powerUp.timer.toFixed(1)}s`, c:'#cc88ff'});
+  }
+  if (enh) parts.push({t:`ENH ${player.shotEnhanceTimer.toFixed(1)}s`, c:'#ffee44'});
+  if (player.guardBrokenTimer>0) parts.push({t:'GUARD-BRK', c:'#ff3333'});
+  else if (isParryActive(player))  parts.push({t:'PARRY!',   c:'#eef8ff'});
+  else if (player.guarding)        parts.push({t:'GUARD',    c:'#4488ff'});
+  if (player.hitStunTimer>0)       parts.push({t:'STUN',     c:'#ff6644'});
+  if (parts.length) {
+    c.font='bold 12px monospace'; c.textAlign='left'; let sx2=tx;
+    parts.slice(0,3).forEach(p=>{ c.fillStyle=p.c; c.fillText(p.t, sx2, ty); sx2+=c.measureText(p.t).width+9; });
+  }
+}
+
+// Top-level HUD — drawn after CRT overlay so terminals stay sharp
+function drawFourTerminalHUD(c) {
+  drawTopLeftTerminal(c);
+  drawTopRightTerminal(c);
+  drawPlayerTerminal(c, GS.players[0], true);
+  drawPlayerTerminal(c, GS.players[1], false);
+}
+
+// ── Legacy terminal console (kept for reference, no longer called) ────────────
+function drawGameplayTerminal(c) {
+  const TW = 418, startX = DESIGN_WIDTH - TW - 12, startY = 12;
+  const now = Date.now();
+  drawGlassPanel(c, startX, startY, TW, 574, '#1a3a6a');
+
+  const mm = GS.methodMode, isCat = mm !== 'linear', isFull = mm === 'full';
+  const [p1, p2] = GS.players;
+  let tx = startX + 14, ty = startY + 19;
+
+  function tln(text, col, bold) {
+    c.font = `${bold?'bold ':''}14px monospace`;
+    c.fillStyle = col || '#8899aa'; c.textAlign = 'left';
+    c.fillText(text, tx, ty); ty += 20;
+  }
+  function tsep() {
+    c.strokeStyle = '#0d1e30'; c.lineWidth = 1;
+    c.beginPath(); c.moveTo(tx-4, ty-3); c.lineTo(startX+TW-12, ty-3); c.stroke();
+    ty += 7;
+  }
+
+  // Header — terminal prompt feel
+  const blink = Math.floor(now/700)%2===0?'█':' ';
+  const modeSlug = { versus:'versus', practice:'practice', vsai:'vs-ai', demoLab:'demo-lab' };
+  c.font = 'bold 11px monospace'; c.fillStyle = '#1a3a5a'; c.textAlign = 'left';
+  c.fillText('methodlab@crt-sim:~/live_match$', tx, ty); ty += 17;
+  c.font = '11px monospace'; c.fillStyle = '#112233';
+  c.fillText(`spline-fighter --mode ${modeSlug[GS.mode]||GS.mode} ${blink}`, tx, ty); ty += 21;
+  tsep();
+
+  // [SESSION]
+  c.font = 'bold 11px monospace'; c.fillStyle = '#1e3e5a'; c.fillText('[SESSION]', tx, ty); ty += 17;
+  const modeNames = { versus:'VS LOCAL', practice:'PRACTICE', vsai:'VS AI', demoLab:'DEMO LAB' };
+  tln(`mode    ${modeNames[GS.mode]||GS.mode.toUpperCase()}`, '#7799bb');
+  const mmName = { linear:'LINEAR  (no method)', catmull:'CATMULL-ROM only', full:'FULL NUMERICAL' };
+  tln(`method  ${mmName[mm]}`, '#ffdd44');
+  const abil = statsInfo.abilityLabel || '—';
+  tln(`ability ${abil.length>30 ? abil.slice(0,28)+'…' : abil}`, '#00d5ee');
+  tsep();
+
+  // [METHODS]
+  c.font = 'bold 11px monospace'; c.fillStyle = '#1e3e5a'; c.fillText('[METHODS]', tx, ty); ty += 17;
+  tln(`M1 catmull-rom   ${isCat  ?'✓ on':'✗ off'}`, isCat  ?'#33ee77':'#cc4444');
+  tln(`M2 arc-length    ${isFull ?'✓ '+statsInfo.arcLength.toFixed(0)+'px':'✗ off'}`, isFull?'#33ee77':'#cc4444');
+  tln(`M3 reparam       ${isFull ?'✓ on':'✗ off'}`, isFull?'#33ee77':'#cc4444');
+  ty += 2;
+  tln(`sampled  ${statsInfo.sampledCount} pts`, '#556677');
+  tln(`dist     ${statsInfo.distance.toFixed(0)} px`, '#556677');
+  tln(`speed    ${statsInfo.actualSpeed>0?statsInfo.actualSpeed.toFixed(0):statsInfo.speed} px/s`, statsInfo.actualSpeed>0?'#99ffaa':'#556677');
+  tsep();
+
+  // [COMBAT]
+  c.font = 'bold 11px monospace'; c.fillStyle = '#1e3e5a'; c.fillText('[COMBAT]', tx, ty); ty += 17;
+  const mMin = Math.floor(GS.matchTime/60), mSec = Math.floor(GS.matchTime%60);
+  tln(`time  ${mMin}:${mSec.toString().padStart(2,'0')}`, '#887799');
+  for (const [pi,p] of [[1,p1],[2,p2]]) {
+    const pc = pi===1?'#4499ff':'#ff8844';
+    const stk = '♥'.repeat(p.stocks)+'♡'.repeat(Math.max(0,3-p.stocks));
+    tln(`P${pi}  HP ${p.health.toString().padStart(3)} / 100   ${stk}`, pc);
+    if (p.powerUp) {
+      const pn={curveAmplifier:'CURVE+',sampleDensityBoost:'N+',constantSpeedSurge:'SPD+'}[p.powerUp.type]||'PU';
+      tln(`     [${pn}] ${p.powerUp.timer.toFixed(1)}s`, '#cc44ff');
+    }
+    if (p.shotEnhanceActive) tln(`     ⚡ ENH ${(SHOT_NAME[p.activeShotMode]||'').toUpperCase()} ${p.shotEnhanceTimer.toFixed(1)}s`, '#ffee44');
+  }
+  tsep();
+
+  // [STORM]
+  c.font = 'bold 11px monospace'; c.fillStyle = '#1e3e5a'; c.fillText('[STORM]', tx, ty); ty += 17;
+  const stLv = getStormLevel(), mCfg = getMeteorSpawnConfig();
+  const mActive = GS.meteors.filter(m=>m.active).length;
+  const hasWarn = GS.meteors.some(m=>m.active&&m.phase==='warning');
+  tln(`level   ${stLv} / 4`, stLv>=3?'#ff8833':'#556677');
+  tln(`active  ${mActive} / ${mCfg.maxActive}`, mActive>0?'#ffaa44':'#556677');
+  if (hasWarn) tln('⚠ METEOR INCOMING', '#ffee33');
+  else         tln(`next    ${GS.meteorTimer.toFixed(1)}s`, '#445566');
+
+  // ESC hint at bottom
+  ty = startY + 556;
+  c.font = '11px monospace'; c.fillStyle = '#182838'; c.textAlign = 'center';
+  c.fillText('ESC: menu    TAB: demo lab    R: reset', startX + TW/2, ty);
+}
+
+// ── Compact terminal-style player status strip ────────────────────────────────
+function drawPlayerStatusStrip(c, player, isLeft) {
+  const SW = 432, SH = 112;
+  const sx = isLeft ? 10 : DESIGN_WIDTH - SW - 10;
+  const sy = DESIGN_HEIGHT - SH - 10;
+  drawGlassPanel(c, sx, sy, SW, SH, player.color + '99');
+
+  const tx = sx + 12;
+  let ty = sy + 18;
+
+  // Name + stocks + HP value
+  const name = player.isDummy?'DUMMY':(player.isAI?'AI':`P${player.id}`);
+  const stk = '♥'.repeat(player.stocks)+'♡'.repeat(Math.max(0,3-player.stocks));
+  c.font = 'bold 15px monospace'; c.fillStyle = player.color; c.textAlign = 'left';
+  c.fillText(name, tx, ty);
+  c.font = '13px monospace'; c.fillStyle = player.color+'bb'; c.fillText(stk, tx+44, ty);
+  const hpCol = player.health>50?'#55ff88':player.health>25?'#ffdd44':'#ff5555';
+  c.textAlign = 'right'; c.fillStyle = hpCol; c.font = 'bold 14px monospace';
+  c.fillText(`${player.health}hp`, sx+SW-12, ty); ty += 10;
+
+  // HP bar
+  const bw = SW-24;
+  c.fillStyle = '#080e1c'; c.fillRect(tx, ty, bw, 7);
+  c.fillStyle = player.health>50?'#2a8a44':player.health>25?'#8a8822':'#882222';
+  c.fillRect(tx, ty, bw*(player.health/player.maxHealth), 7);
+  c.strokeStyle = '#0d1a2e'; c.lineWidth = 1; c.strokeRect(tx, ty, bw, 7); ty += 11;
+
+  // Shield bar
+  const shFrac = player.shield/player.maxShield;
+  const isParry = isParryActive(player);
+  c.fillStyle = '#04080f'; c.fillRect(tx, ty, bw, 4);
+  c.fillStyle = isParry?'#eef8ff':player.guarding?'#3366cc':player.guardBrokenTimer>0?'#440000':'#112244';
+  c.fillRect(tx, ty, bw*shFrac, 4); ty += 11;
+
+  // Row: cooldowns | shot mode | power-up
+  c.font = '12px monospace'; c.textAlign = 'left';
+  const dr = player.cooldowns.dash<=0, pr = player.cooldowns.projectile<=0;
+  c.fillStyle = dr?'#22aa55':'#2a3a4a';
+  c.fillText(dr?'DASH ●':`DASH ${player.cooldowns.dash.toFixed(1)}s`, tx, ty);
+  c.fillStyle = pr?'#22aa55':'#2a3a4a';
+  c.fillText(pr?'PROJ ●':`PROJ ${player.cooldowns.projectile.toFixed(1)}s`, tx+118, ty);
+  const snC = player.shotEnhanceActive?'#ffee44':'#2a3a4a';
+  const snL = {heavy:'HVY',twin:'TWN',spread:'SPR'}[player.activeShotMode||player.shotMode]||'NRM';
+  c.fillStyle = snC; c.fillText((player.shotEnhanceActive?'⚡':' ')+snL, tx+246, ty);
+  if (player.powerUp) {
+    c.fillStyle = PU_COL[player.powerUp.type]||'#cc44ff';
+    c.fillText(`${PU_ICON[player.powerUp.type]||'PU'} ${player.powerUp.timer.toFixed(1)}s`, tx+316, ty);
+  }
+  ty += 15;
+
+  // Status flags
+  const flags = [];
+  if (player.guardBrokenTimer>0)  flags.push({t:'[BROKEN]',c:'#ff3333'});
+  else if (isParry)               flags.push({t:'[PARRY!]',c:'#eef8ff'});
+  else if (player.guarding)       flags.push({t:'[GUARD]', c:'#4488ff'});
+  if (player.hitStunTimer>0)      flags.push({t:'[STUN]',  c:'#ff6644'});
+  if (flags.length) {
+    c.font = 'bold 11px monospace'; let fx = tx;
+    flags.slice(0,3).forEach(f => {
+      c.fillStyle = f.c; c.textAlign = 'left'; c.fillText(f.t, fx, ty);
+      fx += c.measureText(f.t).width + 8;
+    });
+  }
+  const sm = player.statMods;
+  if (Math.abs(sm.dashSpeedMult-1)>0.005||Math.abs(sm.projectileSpeedMult-1)>0.005) {
+    c.font = '10px monospace'; c.fillStyle = '#334455'; c.textAlign = 'right';
+    c.fillText(`DS${sm.dashSpeedMult.toFixed(2)}x PS${sm.projectileSpeedMult.toFixed(2)}x`, sx+SW-12, ty);
+  }
+}
+
+// ── TV Menu Overlay (Patch J.4 — screen fill fix + readable text + page flash) ─────
+
+// Page flash triggered on menu open/close and page transitions (NOT nav up/down)
+function triggerMenuPageFlash(strength) {
+  strength = strength === undefined ? 1 : strength;
+  UI.pageFlashTimer = 0;
+  UI.pageFlashMax = 0.18 + strength * 0.10;
+  UI.pageFlashStrength = strength;
+}
+
+function updateMenuEffects(dt) {
+  if (UI.pageFlashTimer < UI.pageFlashMax) {
+    UI.pageFlashTimer = Math.min(UI.pageFlashMax, UI.pageFlashTimer + dt);
+  }
+}
+
+// Blue-white flicker + scanline burst drawn inside the CRT screen clip region
+function drawMenuPageFlash(c, x, y, w, h) {
+  if (UI.pageFlashMax <= 0 || UI.pageFlashTimer >= UI.pageFlashMax) return;
+  const t = UI.pageFlashTimer / UI.pageFlashMax;
+  const alpha = Math.sin(t * Math.PI) * UI.pageFlashStrength;
+  if (alpha <= 0.002) return;
+  c.save();
+  c.fillStyle = `rgba(170,215,255,${(alpha * 0.55).toFixed(3)})`;
+  c.fillRect(x, y, w, h);
+  c.globalAlpha = alpha * 0.10;
+  c.fillStyle = '#ffffff';
+  for (let sy = y; sy < y + h; sy += 2) c.fillRect(x, sy, w, 1);
+  c.restore();
+}
+
+function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+function easeOutBack(t) {
+  const c1 = 1.30158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+function lerpVal(a, b, t) { return a + (b - a) * t; }
+
+// Top-level composition. c is in virtual 1920×1080 space (inside withVirtual).
+function drawMenuScene(c) {
+  const rawT = UI.menuAnim;
+  if (rawT <= 0) return;
+  const t = easeOutCubic(rawT);
+
+  // Layer 1 — dark base + optional room background (behind screen content)
+  c.fillStyle = '#010308'; c.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT);
+  drawZoomingCRTBackground(c, t);
+
+  // Layer 2 — screen content (game/menu text) rendered behind the frame
+  drawZoomingScreenContent(c, t, rawT);
+
+  // Layer 3 — CRT frame cutout on top, transparent hole reveals screen content
+  drawCRTFrameCutout(c, t);
+
+  // Layer 4 — hand/remote rises from below as POV foreground
+  drawRemoteOverlay(c, t, rawT);
+}
+
+// CRT bg draws at startScale zoomed toward TV center, animates to endScale (full room)
+function drawZoomingCRTBackground(c, t) {
+  const { startScale, endScale, anchorX, anchorY } = MENU_BG_ZOOM;
+  const bgScale = lerpVal(startScale, endScale, t);
+  const fadeAlpha = Math.min(1, t * 1.5); // fade completes before scale does
+  const crtBg = loadedAssets['crtMenuBg'];
+  if (crtBg) {
+    c.save();
+    c.globalAlpha = fadeAlpha;
+    c.translate(anchorX, anchorY);
+    c.scale(bgScale, bgScale);
+    c.translate(-anchorX, -anchorY);
+    c.drawImage(crtBg, 0, 0, DESIGN_WIDTH, DESIGN_HEIGHT);
+    c.restore();
+    c.globalAlpha = 1;
+  } else {
+    drawMenuFallback(c, t);
+  }
+}
+
+// Fallback when crt_bg.png is missing
+function drawMenuFallback(c, t) {
+  const { x:ox, y:oy, w:ow, h:oh } = MENU_TV_SCREEN_FILL;
+  c.save();
+  c.globalAlpha = t * 0.88;
+  c.fillStyle = '#020810'; c.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT);
+  c.globalAlpha = t;
+  c.strokeStyle = '#1e3050'; c.lineWidth = 5;
+  c.beginPath(); c.roundRect(ox - 56, oy - 46, ow + 112, oh + 100, 14); c.stroke();
+  c.restore();
+  c.globalAlpha = 1;
+}
+
+// CRT frame cutout — room+bezel with transparent screen hole, drawn over screen content
+function drawCRTFrameCutout(c, t) {
+  const { startScale, endScale, anchorX, anchorY } = MENU_BG_ZOOM;
+  const bgScale = lerpVal(startScale, endScale, t);
+  const fadeAlpha = Math.min(1, t * 1.5);
+  const frameImg = loadedAssets['crtFrameCutout'];
+  if (!frameImg) return;
+  c.save();
+  c.globalAlpha = fadeAlpha;
+  c.translate(anchorX, anchorY);
+  c.scale(bgScale, bgScale);
+  c.translate(-anchorX, -anchorY);
+  c.drawImage(frameImg, 0, 0, DESIGN_WIDTH, DESIGN_HEIGHT);
+  c.restore();
+  c.globalAlpha = 1;
+}
+
+// Screen content shrinks into TV rect. Crossfades to menu text at rawT 0.75–1.0.
+function drawZoomingScreenContent(c, t, rawT) {
+  const { x:ox, y:oy, w:ow, h:oh } = MENU_TV_SCREEN_FILL;
+  const rx = lerpVal(0, ox, t);
+  const ry = lerpVal(0, oy, t);
+  const rw = lerpVal(DESIGN_WIDTH,  ow, t);
+  const rh = lerpVal(DESIGN_HEIGHT, oh, t);
+
+  // Crossfade timing: rawT 0.75–1.0
+  const gameFade = rawT < 0.75 ? 1.0 : Math.max(0, 1.0 - (rawT - 0.75) / 0.25);
+  const menuFade = rawT < 0.75 ? 0.0 : Math.min(1.0, (rawT - 0.75) / 0.25);
+
+  // Apply rounded clip (corner grows as rect shrinks toward TV screen shape)
+  beginCRTScreenMask(c, rx, ry, rw, rh, t);
+
+  // Dark screen base
+  c.fillStyle = '#000408'; c.fillRect(rx, ry, rw, rh);
+
+  // Game content — fades out
+  if (gameFade > 0) {
+    c.save();
+    c.globalAlpha = gameFade;
+    c.translate(rx, ry);
+    c.scale(rw / DESIGN_WIDTH, rh / DESIGN_HEIGHT);
+    if (GS.mode === 'demoLab') { renderDemoLab(c); } else { renderGame(c); }
+    c.restore();
+    c.globalAlpha = 1;
+  }
+
+  // Menu content — fades in (no heavy dark panel; screen is dark via base fill)
+  if (menuFade > 0) {
+    c.save();
+    c.globalAlpha = menuFade;
+    drawCRTScreenEffects(c, rx, ry, rw, rh);
+    c.restore();
+    c.globalAlpha = menuFade;
+    if (UI.menuPage === 'controls') { drawControlsPageCRT(c); }
+    else { drawMainMenuCRT(c); }
+    c.globalAlpha = 1;
+  }
+
+  // Page transition flash — blue-white flicker on menu open/close/page change
+  drawMenuPageFlash(c, rx, ry, rw, rh);
+
+  // CRT glass overlay — vignette + subtle reflection, always on top inside mask
+  drawCRTGlassOverlay(c, rx, ry, rw, rh, t);
+
+  c.restore(); // end beginCRTScreenMask
+}
+
+// Clip context to a rounded-corner shape matching TV screen. Caller must c.restore().
+function beginCRTScreenMask(c, rx, ry, rw, rh, t) {
+  const cornerR = t * MENU_TV_SCREEN_MASK.r;
+  c.save();
+  c.beginPath();
+  c.roundRect(rx, ry, rw, rh, cornerR);
+  c.clip();
+}
+
+// Scanlines + top/bottom glow. Drawn inside the screen mask.
+function drawCRTScreenEffects(c, rx, ry, rw, rh) {
+  const fp = UI.flickerPulse;
+  for (let sy = ry; sy < ry + rh; sy += 3) {
+    c.fillStyle = 'rgba(0,0,0,0.10)'; c.fillRect(rx, sy, rw, 1);
+  }
+  const grd = c.createLinearGradient(rx, ry, rx, ry + rh);
+  grd.addColorStop(0,   `rgba(0,50,160,${0.06 + 0.03 * fp})`);
+  grd.addColorStop(0.5, 'rgba(0,0,0,0)');
+  grd.addColorStop(1,   `rgba(0,30,100,${0.04 + 0.02 * fp})`);
+  c.fillStyle = grd; c.fillRect(rx, ry, rw, rh);
+  if (UI.selectFlash > 0) {
+    const fa = Math.sin((UI.selectFlash / 0.18) * Math.PI) * 0.22;
+    c.fillStyle = `rgba(0,100,255,${fa})`; c.fillRect(rx, ry, rw, rh);
+  }
+}
+
+// Radial vignette + glass highlight. Drawn inside the screen mask on top of game/menu.
+function drawCRTGlassOverlay(c, rx, ry, rw, rh, t) {
+  // Edge vignette
+  const vGrd = c.createRadialGradient(
+    rx + rw * 0.5, ry + rh * 0.5, rh * 0.15,
+    rx + rw * 0.5, ry + rh * 0.5, rh * 0.86
+  );
+  vGrd.addColorStop(0, 'rgba(0,0,0,0)');
+  vGrd.addColorStop(1, `rgba(0,0,14,${0.58 * t})`);
+  c.fillStyle = vGrd; c.fillRect(rx, ry, rw, rh);
+
+  // Subtle glass reflection (top-left to center)
+  const rGrd = c.createLinearGradient(rx, ry, rx + rw * 0.55, ry + rh * 0.45);
+  rGrd.addColorStop(0,    `rgba(140,170,255,${0.07 * t})`);
+  rGrd.addColorStop(0.35, `rgba(80,110,220,${0.03 * t})`);
+  rGrd.addColorStop(1,    'rgba(0,0,0,0)');
+  c.fillStyle = rGrd; c.fillRect(rx, ry, rw, rh);
+
+  // Inner border glow
+  const cornerR = t * MENU_TV_SCREEN_MASK.r;
+  c.save();
+  c.strokeStyle = `rgba(50,70,190,${0.18 * t})`; c.lineWidth = 4;
+  c.beginPath(); c.roundRect(rx + 2, ry + 2, rw - 4, rh - 4, Math.max(0, cornerR - 2));
+  c.stroke();
+  c.restore();
+}
+
+// Main menu — larger readable text, left-side layout, CRT/Y2K terminal style
+function drawMainMenuCRT(c) {
+  const { x, y, w, h } = MENU_TEXT_AREA;
+  const fp = UI.flickerPulse;
+  const lx = x + 10;
+
+  // Title
+  c.save();
+  c.font = 'bold 38px monospace';
+  c.fillStyle = `rgba(20,${220 + Math.floor(35 * fp)},255,1)`;
+  c.textAlign = 'left';
+  c.shadowBlur = 24 + 10 * fp; c.shadowColor = '#007acc';
+  c.fillText('SPLINE FIGHTER', lx, y + 44);
+  c.shadowBlur = 0;
+  c.restore();
+
+  // Subtitle
+  c.font = 'bold 14px monospace';
+  c.fillStyle = `rgba(90,${170 + Math.floor(25 * fp)},215,1)`;
+  c.textAlign = 'left';
+  c.fillText('Method Lab Arena  /  UNY', lx, y + 66);
+
+  // Separator
+  c.strokeStyle = '#1e4060'; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(lx, y + 76); c.lineTo(x + w - 8, y + 76); c.stroke();
+
+  // Options — cursor only, no full-width bars
+  const optY0 = y + 106, lineH = 52;
+  MENU_OPTIONS.forEach((opt, i) => {
+    const oy2 = optY0 + i * lineH;
+    const sel = i === UI.menuSel;
+    if (sel) {
+      c.save();
+      c.shadowBlur = 22 + 10 * fp; c.shadowColor = '#00bbff';
+      c.font = 'bold 22px monospace';
+      c.fillStyle = `rgba(30,${220 + Math.floor(35 * fp)},255,1)`;
+      c.textAlign = 'left';
+      c.fillText('>', lx, oy2);
+      c.fillText(opt, lx + 26, oy2);
+      c.shadowBlur = 0;
+      // Thin underline glow under selected text
+      c.font = 'bold 22px monospace';
+      const tw = c.measureText(opt).width;
+      c.strokeStyle = `rgba(0,${180 + Math.floor(75 * fp)},255,0.50)`;
+      c.lineWidth = 1.5;
+      c.beginPath(); c.moveTo(lx + 26, oy2 + 4); c.lineTo(lx + 26 + tw, oy2 + 4); c.stroke();
+      c.restore();
+    } else {
+      c.font = '18px monospace';
+      c.fillStyle = `rgba(72,${148 + Math.floor(18 * fp)},200,1)`;
+      c.textAlign = 'left';
+      c.fillText('  ' + opt, lx, oy2);
+    }
+  });
+
+  c.font = '11px monospace'; c.fillStyle = '#2e5070'; c.textAlign = 'left';
+  c.fillText('UP/DOWN  nav    ENTER  select    ESC  close', lx, y + h - 8);
+}
+
+// Controls — four-block Arch-Linux-terminal layout spanning full CRT screen
+function drawControlsPageCRT(c) {
+  const { x:fx, y:fy, w:fw, h:fh } = MENU_TV_SCREEN_FILL;
+  const pad = 34;
+  const col1 = fx + pad;
+  const col2 = fx + Math.floor(fw / 2) + 10;
+  const rowH = 19;
+  const fp = UI.flickerPulse;
+
+  // Title
+  c.save();
+  c.font = 'bold 22px monospace';
+  c.fillStyle = `rgba(0,${200 + Math.floor(55 * fp)},255,1)`;
+  c.textAlign = 'left';
+  c.shadowBlur = 14 + 6 * fp; c.shadowColor = '#005588';
+  c.fillText('CONTROLS', col1, fy + 38);
+  c.shadowBlur = 0;
+  c.restore();
+
+  c.strokeStyle = '#0e2238'; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(col1, fy + 46); c.lineTo(fx + fw - pad, fy + 46); c.stroke();
+
+  // Helper: section header
+  function hdr(label, cx, cy, col) {
+    c.save();
+    c.font = 'bold 15px monospace'; c.fillStyle = col; c.textAlign = 'left';
+    c.shadowBlur = 6; c.shadowColor = col;
+    c.fillText(label, cx, cy);
+    c.shadowBlur = 0; c.restore();
+  }
+  // Helper: key-value row
+  function row(key, action, cx, cy, kCol, aCol) {
+    c.font = 'bold 13px monospace'; c.fillStyle = kCol; c.textAlign = 'left';
+    c.fillText(key, cx, cy);
+    c.font = '13px monospace'; c.fillStyle = aCol;
+    c.fillText(action, cx + 76, cy);
+  }
+
+  const topBlock = fy + 66;
+
+  // ── [P1] block ──
+  hdr('[P1]', col1, topBlock, '#4499ff');
+  let r1 = topBlock + rowH;
+  const p1Rows = [
+    ['A / D', 'move'],
+    ['W', 'jump'],
+    ['F', 'attack'],
+    ['G', 'dash'],
+    ['H', 'projectile'],
+    ['C', 'shot mode'],
+    ['V', 'enhance'],
+    ['S', 'guard / parry'],
+  ];
+  p1Rows.forEach(([k, a]) => { row(k, a, col1, r1, '#5599cc', '#7ab8dd'); r1 += rowH; });
+
+  // ── [P2] block ──
+  hdr('[P2]', col2, topBlock, '#ff8844');
+  let r2 = topBlock + rowH;
+  const p2Rows = [
+    ['← / →', 'move'],
+    ['↑', 'jump'],
+    ['K', 'attack'],
+    ['L', 'dash'],
+    [';', 'projectile'],
+    ['N', 'shot mode'],
+    ['M', 'enhance'],
+    ['↓', 'guard / parry'],
+  ];
+  p2Rows.forEach(([k, a]) => { row(k, a, col2, r2, '#cc7744', '#dda070'); r2 += rowH; });
+
+  const botBlock = topBlock + rowH * 9 + 10;
+
+  // ── [GLOBAL] block ──
+  hdr('[GLOBAL]', col1, botBlock, '#9999cc');
+  let g1 = botBlock + rowH;
+  const globalRows = [
+    ['Esc', 'menu / back'],
+    ['Tab', 'Demo Lab'],
+    ['1/2/3', 'method mode'],
+    ['R', 'reset match'],
+    ['P', 'practice'],
+    ['I', 'VS AI'],
+  ];
+  globalRows.forEach(([k, a]) => { row(k, a, col1, g1, '#8888bb', '#aaaacc'); g1 += rowH; });
+
+  // ── [DEMO LAB] block ──
+  hdr('[DEMO LAB]', col2, botBlock, '#33cc88');
+  let g2 = botBlock + rowH;
+  const demoRows = [
+    ['G / H', 'dash / projectile'],
+    ['M', 'meteor'],
+    ['U', 'power-ups'],
+    ['B', 'impact lab'],
+    ['Q / E', 'module'],
+    ['← / →', 'slider'],
+    ['Space', 'restart'],
+  ];
+  demoRows.forEach(([k, a]) => { row(k, a, col2, g2, '#33aa77', '#55cc99'); g2 += rowH; });
+
+  c.font = '11px monospace'; c.fillStyle = '#2e5070'; c.textAlign = 'left';
+  c.fillText('ESC  back to menu', col1, fy + fh - 14);
+}
+
+// Remote — large POV foreground, rises from below with easeOutBack settle
+function drawRemoteOverlay(c, t, rawT) {
+  const { x, y, w, h } = REMOTE_DRAW;
+  const { enterOffsetY, navBouncePx, okScale } = REMOTE_ANIM;
+
+  // Use easeOutBack for a physical settle on entry
+  const ebt = Math.min(1, easeOutBack(Math.min(1, rawT * 1.1)));
+  const slideY = lerpVal(enterOffsetY, 0, ebt);
+
+  // Nav/confirm bounce
+  let bOffY = 0, scX = 1, scY = 1;
+  const bSin = Math.sin(Math.min(UI.remoteBounce, 1) * Math.PI);
+  if (UI.remoteState === 'up')   bOffY = -navBouncePx * bSin;
+  if (UI.remoteState === 'down') bOffY =  navBouncePx * bSin;
+  if (UI.remoteState === 'ok')   { scX = 1 + (okScale - 1) * bSin; scY = scX; }
+
+  const imgKey = { idle:'remoteIdle', up:'remoteUp', down:'remoteDown', ok:'remoteOk' }[UI.remoteState] || 'remoteIdle';
+  let img = loadedAssets[imgKey];
+  if (!img) img = loadedAssets['remoteIdle'];
+
+  const drawY = y + slideY + bOffY;
+  const cx2 = x + w / 2, cy2 = drawY + h / 2;
+
+  c.save();
+  c.globalAlpha = Math.min(1, t * 1.3);
+  if (img) {
+    c.translate(cx2, cy2);
+    c.scale(scX, scY);
+    c.drawImage(img, -w / 2, -h / 2, w, h);
+  } else {
+    c.fillStyle = 'rgba(8,16,30,0.88)'; c.strokeStyle = '#1e3050'; c.lineWidth = 2;
+    c.beginPath(); c.roundRect(x, drawY, w, h, 16); c.fill(); c.stroke();
+    c.font = 'bold 16px monospace'; c.fillStyle = '#2a4a6a'; c.textAlign = 'center';
+    c.fillText('[REMOTE]', cx2, drawY + h / 2);
+  }
+  c.restore();
+  c.globalAlpha = 1;
+}
+
+// (old Demo Lab floating explanation dock removed in Patch L — replaced by the
+//  bottom pipeline terminal in renderDemoLab / drawDemoBottomTerminal)
+
+function renderGame(c) {
+  const [p1,p2] = GS.players;
+
+  // ── In-world camera framing (Patch K.2): shift gameplay view up by
+  //    ARENA_VIEW_OFFSET_Y. Render-only; physics/collisions/input unchanged.
+  //    Everything physically inside the arena moves together. ──────────────
+  c.save();
+  c.translate(0, ARENA_VIEW_OFFSET_Y);
+
+  drawArena(c);
+
+  if (p1.ability.active) drawAbilityTrail(c, p1.ability);
+  else if (p1.dashCharging && p1.dashPreviewPath) drawDashPreview(c, p1.dashPreviewPath, GS.methodMode);
+  if (p2.ability.active) drawAbilityTrail(c, p2.ability);
+  else if (p2.dashCharging && p2.dashPreviewPath) drawDashPreview(c, p2.dashPreviewPath, GS.methodMode);
+  for (const proj of GS.projectiles) drawProjTrail(c, proj);
+
+  // Power-ups
+  for (const pu of GS.powerUps) drawPowerUp(c, pu);
+
+  drawPlayer(c, p1);
+  drawPlayer(c, p2);
+
+  for (const proj of GS.projectiles) drawProjectile(c, proj);
+
+  drawHitSparks(c);
+  drawMeteors(c);
+  drawArenaEventBanner(c);
+  drawFloatTexts(c);
+
+  if (GS.showHitbox) {
+    drawHitboxDebug(c, p1);
+    drawHitboxDebug(c, p2);
+    for (const proj of GS.projectiles) {
+      c.save(); c.strokeStyle='#ff44ff'; c.lineWidth=2;
+      c.beginPath(); c.arc(proj.x, proj.y, proj.hitRadius, 0, Math.PI*2); c.stroke();
+      c.restore();
+    }
+  }
+
+  c.restore(); // end in-world camera framing — screen-space UI below stays fixed
+
+  // Player terminals drawn by drawFourTerminalHUD after CRT overlay
+
+  if (GS.winner) {
+    c.fillStyle = 'rgba(0,0,0,0.75)';
+    c.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT);
+    const winColor = GS.winner === 1 ? COL.p1 : COL.p2;
+    c.fillStyle = winColor; c.font = 'bold 90px monospace'; c.textAlign = 'center';
+    c.fillText(`PLAYER ${GS.winner} WINS!`, DESIGN_WIDTH/2, DESIGN_HEIGHT/2 - 30);
+    c.fillStyle = '#aaa'; c.font = '32px monospace';
+    const [wp1, wp2] = GS.players;
+    c.fillText(`P1 Stocks: ${wp1.stocks}   P2 Stocks: ${wp2.stocks}`, DESIGN_WIDTH/2, DESIGN_HEIGHT/2 + 40);
+    c.fillStyle = '#888'; c.font = '30px monospace';
+    c.fillText('Press R to reset', DESIGN_WIDTH/2, DESIGN_HEIGHT/2 + 100);
+  }
+}
+
+// ---- Demo Lab rendering ----
+
+// --- Power-Up Showcase helpers ---
+
+// Left/right panel path origins for the 2-panel comparison layout
+const SHOW_LX = 80, SHOW_LY = 610, SHOW_RX = 1080, SHOW_RY = 610, SHOW_PDIST = 780;
+
+function buildShowcasePaths(module, slider) {
+  if (module === 'curveAmplifier') {
+    const offset = Math.round(lerp(80, 350, slider));
+    return {
+      rawPath:    makeDashPathDir(SHOW_LX, SHOW_LY, 1, SHOW_PDIST, offset, STEPS_PER_SEG),
+      methodPath: makeDashPathDir(SHOW_RX, SHOW_RY, 1, SHOW_PDIST, offset, STEPS_PER_SEG),
+    };
+  } else if (module === 'sampleDensityBoost') {
+    const stepsHigh = Math.round(lerp(10, 120, slider));
+    return {
+      rawPath:    makeDashPathDir(SHOW_LX, SHOW_LY, 1, SHOW_PDIST, 200, 10),
+      methodPath: makeDashPathDir(SHOW_RX, SHOW_RY, 1, SHOW_PDIST, 200, stepsHigh),
+    };
+  } else {
+    return {
+      rawPath:    makeDashPathDir(SHOW_LX, SHOW_LY, 1, SHOW_PDIST, 200, STEPS_PER_SEG),
+      methodPath: makeDashPathDir(SHOW_RX, SHOW_RY, 1, SHOW_PDIST, 200, STEPS_PER_SEG),
+    };
+  }
+}
+
+function getShowcasePaths() {
+  const sh = DS.puShowcase;
+  if (!sh.cachedMethodPath || sh.cachedModule !== sh.module || sh.cachedSlider !== sh.slider) {
+    const p = buildShowcasePaths(sh.module, sh.slider);
+    sh.cachedRawPath    = p.rawPath;
+    sh.cachedMethodPath = p.methodPath;
+    sh.cachedModule = sh.module;
+    sh.cachedSlider = sh.slider;
+  }
+  return { rawPath: sh.cachedRawPath, methodPath: sh.cachedMethodPath };
+}
+
+function updatePowerUpShowcase(dt) {
+  if (!DS.puShowcase) return;
+  const sh = DS.puShowcase;
+  const { rawPath, methodPath } = getShowcasePaths();
+
+  const speed = sh.module === 'constantSpeedSurge'
+    ? Math.round(lerp(300, 1200, sh.slider))
+    : SHOWCASE_BALL_SPEED;
+
+  const prevRaw = sh.distRaw, prevMethod = sh.distMethod;
+  sh.distRaw    += speed * dt;
+  sh.distMethod += speed * dt;
+
+  const rawLen = sh.module === 'curveAmplifier'
+    ? linearSegLen(rawPath.linearSegments)
+    : rawPath.totalLength;
+  if (sh.distRaw    > rawLen)                 sh.distRaw    = 0;
+  if (sh.distMethod > methodPath.totalLength)  sh.distMethod = 0;
+
+  // Measure actual speeds (used in Constant-Speed Surge to show fluctuation vs stability)
+  if (sh.module === 'constantSpeedSurge') {
+    const N = rawPath.curvePoints.length;
+    const rawFrac  = Math.min(sh.distRaw / rawPath.totalLength, 0.9999);
+    const prevFrac = Math.min(prevRaw    / rawPath.totalLength, 0.9999);
+    const ri  = Math.min(Math.floor(rawFrac  * N), N - 1);
+    const pri = Math.min(Math.floor(prevFrac * N), N - 1);
+    const rp = rawPath.curvePoints[ri], rpp = rawPath.curvePoints[pri];
+    const rdx = rp.x - rpp.x, rdy = rp.y - rpp.y;
+    sh.actualSpeedRaw = dt > 0 ? Math.sqrt(rdx*rdx + rdy*rdy) / dt : 0;
+
+    const mc  = getPositionAtDistance(methodPath.curvePoints, methodPath.arcLengths, sh.distMethod);
+    const mcp = getPositionAtDistance(methodPath.curvePoints, methodPath.arcLengths, Math.min(prevMethod, methodPath.totalLength - 0.01));
+    const mdx = mc.x - mcp.x, mdy = mc.y - mcp.y;
+    sh.actualSpeedMethod = dt > 0 ? Math.sqrt(mdx*mdx + mdy*mdy) / dt : speed;
+  }
+}
+
+function drawSlider(c, x, y, w, label, valueText, sliderVal) {
+  const labelW = 300;
+  const trackX = x + labelW;
+  const trackW = w - labelW - 180;
+  const trackY = y - 10;
+  const trackH = 18;
+
+  c.font = 'bold 22px monospace';
+  c.fillStyle = '#bbccdd';
+  c.textAlign = 'left';
+  c.fillText(label + ':', x, y + 5);
+
+  // Track background
+  c.fillStyle = '#0d1525';
+  c.beginPath(); c.roundRect(trackX, trackY, trackW, trackH, 5); c.fill();
+
+  // Track fill
+  c.fillStyle = '#2255aa';
+  if (sliderVal > 0) {
+    c.beginPath(); c.roundRect(trackX, trackY, trackW * sliderVal, trackH, 5); c.fill();
+  }
+
+  // Thumb
+  const thumbX = trackX + trackW * sliderVal;
+  c.save();
+  c.shadowBlur = 10; c.shadowColor = '#aaccff';
+  c.fillStyle = '#ddeeff';
+  c.beginPath(); c.arc(thumbX, trackY + trackH / 2, 13, 0, Math.PI * 2); c.fill();
+  c.restore();
+
+  // Min/max hint
+  c.font = '14px monospace'; c.fillStyle = '#334455';
+  c.textAlign = 'left';  c.fillText('min', trackX, trackY + trackH + 18);
+  c.textAlign = 'right'; c.fillText('max', trackX + trackW, trackY + trackH + 18);
+
+  // Value
+  c.font = 'bold 26px monospace';
+  c.fillStyle = '#ffdd44';
+  c.textAlign = 'left';
+  c.fillText(valueText, trackX + trackW + 22, y + 7);
+}
+
+function _drawShowcaseBall(c, pos, color) {
+  c.save();
+  c.shadowBlur = 20; c.shadowColor = color;
+  c.fillStyle = '#ffffff';
+  c.beginPath(); c.arc(pos.x, pos.y, 13, 0, Math.PI * 2); c.fill();
+  c.shadowBlur = 0;
+  c.fillStyle = color;
+  c.beginPath(); c.arc(pos.x, pos.y, 8, 0, Math.PI * 2); c.fill();
+  c.restore();
+}
+
+// Power-Up Showcase — visuals only (paths, sampled points, balls), drawn in
+// source coords. The three-terminal layout clips/transforms each half into a pane.
+function drawShowcaseVisualsAll(c) {
+  if (!DS.puShowcase) return;
+  const sh = DS.puShowcase;
+  const rawPath    = sh.cachedRawPath;
+  const methodPath = sh.cachedMethodPath;
+  if (!rawPath || !methodPath) return;
+
+  const curveOffset = Math.round(lerp(80, 350, sh.slider));
+  const stepsHigh   = Math.round(lerp(10, 120, sh.slider));
+  const RAW_COL = '#ff7733';
+  const MET_COL = '#00ffcc';
+
+  // ===== MODULE-SPECIFIC RENDERING =====
+  if (sh.module === 'curveAmplifier') {
+    // LEFT: angular polyline
+    const segs = rawPath.linearSegments;
+    c.save(); c.globalAlpha = 0.9; c.strokeStyle = RAW_COL; c.lineWidth = 3;
+    c.beginPath(); segs.forEach((p, i) => i === 0 ? c.moveTo(p.x, p.y) : c.lineTo(p.x, p.y)); c.stroke();
+    c.restore();
+    segs.forEach((wp, i) => {
+      c.fillStyle = COL.waypoint; c.beginPath(); c.arc(wp.x, wp.y, 8, 0, Math.PI*2); c.fill();
+      c.fillStyle = '#000'; c.font = 'bold 12px monospace'; c.textAlign = 'center';
+      c.fillText('P'+i, wp.x, wp.y+5);
+    });
+
+    // RIGHT: Catmull-Rom + sampled points
+    c.save(); c.globalAlpha = 0.9; c.strokeStyle = MET_COL; c.lineWidth = 3;
+    c.beginPath(); methodPath.curvePoints.forEach((p, i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y)); c.stroke(); c.restore();
+    c.save(); c.globalAlpha = 0.6;
+    methodPath.curvePoints.forEach((p, i) => { if (i%8===0) { c.beginPath(); c.arc(p.x,p.y,3,0,Math.PI*2); c.fillStyle=COL.sampled; c.fill(); } });
+    c.restore();
+    methodPath.waypoints.forEach((wp, i) => {
+      c.fillStyle = COL.waypoint; c.beginPath(); c.arc(wp.x,wp.y,8,0,Math.PI*2); c.fill();
+      c.fillStyle = '#000'; c.font = 'bold 12px monospace'; c.textAlign = 'center'; c.fillText('P'+i, wp.x, wp.y+5);
+    });
+    const p2m = methodPath.waypoints[2];
+    c.font = '14px monospace'; c.fillStyle = MET_COL; c.textAlign = 'center';
+    c.fillText('P2  offset=' + curveOffset + 'px', p2m.x, p2m.y - 16);
+
+    // BALLS
+    const rawTotal = linearSegLen(segs);
+    _drawShowcaseBall(c, linearPosAtDist(segs, Math.min(sh.distRaw, rawTotal)), RAW_COL);
+    _drawShowcaseBall(c, getPositionAtDistance(methodPath.curvePoints, methodPath.arcLengths, Math.min(sh.distMethod, methodPath.totalLength)), MET_COL);
+
+  } else if (sh.module === 'sampleDensityBoost') {
+    // LEFT: low-sample curve + all dots (sparse)
+    c.save(); c.globalAlpha = 0.55; c.strokeStyle = RAW_COL; c.lineWidth = 2.5;
+    c.beginPath(); rawPath.curvePoints.forEach((p,i) => i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y)); c.stroke(); c.restore();
+    rawPath.curvePoints.forEach((p) => { c.beginPath(); c.arc(p.x,p.y,5,0,Math.PI*2); c.fillStyle='#cc5511'; c.fill(); });
+
+    // RIGHT: high-sample curve + dense dots
+    c.save(); c.globalAlpha = 0.55; c.strokeStyle = MET_COL; c.lineWidth = 2.5;
+    c.beginPath(); methodPath.curvePoints.forEach((p,i) => i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y)); c.stroke(); c.restore();
+    const dotR = Math.max(1.5, 5.5 - stepsHigh / 25);
+    methodPath.curvePoints.forEach((p) => { c.beginPath(); c.arc(p.x,p.y,dotR,0,Math.PI*2); c.fillStyle=COL.sampled; c.fill(); });
+
+    // BALLS
+    _drawShowcaseBall(c, getPositionAtDistance(rawPath.curvePoints, rawPath.arcLengths, Math.min(sh.distRaw, rawPath.totalLength)), RAW_COL);
+    _drawShowcaseBall(c, getPositionAtDistance(methodPath.curvePoints, methodPath.arcLengths, Math.min(sh.distMethod, methodPath.totalLength)), MET_COL);
+
+  } else { // constantSpeedSurge
+    // LEFT: Catmull-Rom curve + uniform sample index ticks (shows uneven spacing)
+    c.save(); c.globalAlpha = 0.7; c.strokeStyle = RAW_COL; c.lineWidth = 2.5;
+    c.beginPath(); rawPath.curvePoints.forEach((p,i) => i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y)); c.stroke(); c.restore();
+    rawPath.curvePoints.forEach((p, i) => { if (i%8===0) { c.beginPath(); c.arc(p.x,p.y,4,0,Math.PI*2); c.fillStyle='#cc6622'; c.fill(); } });
+
+    // RIGHT: same curve + equal arc-length ticks (shows even spacing)
+    c.save(); c.globalAlpha = 0.7; c.strokeStyle = MET_COL; c.lineWidth = 2.5;
+    c.beginPath(); methodPath.curvePoints.forEach((p,i) => i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y)); c.stroke(); c.restore();
+    for (let d = 55; d < methodPath.totalLength; d += 55) {
+      const tp = getPositionAtDistance(methodPath.curvePoints, methodPath.arcLengths, d);
+      c.beginPath(); c.arc(tp.x, tp.y, 4, 0, Math.PI*2); c.fillStyle = '#008877'; c.fill();
+    }
+
+    // BALLS — raw uses uniform parameter index; method uses getPositionAtDistance
+    const N3 = rawPath.curvePoints.length;
+    const rawFrac3 = Math.min(sh.distRaw / rawPath.totalLength, 0.9999);
+    const rawIdx3  = Math.min(Math.floor(rawFrac3 * N3), N3 - 1);
+    _drawShowcaseBall(c, rawPath.curvePoints[rawIdx3], RAW_COL);
+    _drawShowcaseBall(c, getPositionAtDistance(methodPath.curvePoints, methodPath.arcLengths, Math.min(sh.distMethod, methodPath.totalLength)), MET_COL);
+  }
+
+}
+
+// Power-Up Showcase live-value lines for the terminal stat blocks (raw vs method).
+function showcaseStatLines(isRight) {
+  const sh = DS.puShowcase;
+  if (!sh) return [];
+  const rawPath = sh.cachedRawPath, methodPath = sh.cachedMethodPath;
+  if (!rawPath || !methodPath) return [];
+  const stepsHigh   = Math.round(lerp(10, 120, sh.slider));
+  const targetSpeed = Math.round(lerp(300, 1200, sh.slider));
+  if (sh.module === 'curveAmplifier') {
+    return isRight
+      ? [{t:'CURVE: Catmull-Rom ON', c:'#77ff99'}, {t:'ARC LEN: '+methodPath.totalLength.toFixed(0)+' px', c:'#77ff99'}, {t:'SAMPLES: '+methodPath.curvePoints.length+' pts', c:'#aabbff'}, {t:'PATH: smooth spline', c:'#00ffee'}]
+      : [{t:'CURVE: OFF', c:'#ff7777'}, {t:'PATH: angular polyline', c:'#ff9933'}, {t:'LEN: '+linearSegLen(rawPath.linearSegments).toFixed(0)+' px', c:'#ccbbaa'}, {t:'SAMPLES: '+rawPath.curvePoints.length+' pts', c:'#ccbbaa'}];
+  } else if (sh.module === 'sampleDensityBoost') {
+    return isRight
+      ? [{t:'STEPS/SEG: '+stepsHigh, c:'#77ff99'}, {t:'SAMPLES: '+methodPath.curvePoints.length+' pts', c:'#aabbff'}, {t:'ARC LEN: '+methodPath.totalLength.toFixed(0)+' px', c:'#77ff99'}, {t:'Riemann: fine intervals', c:'#00ffee'}]
+      : [{t:'STEPS/SEG: 10 (low)', c:'#ff7777'}, {t:'SAMPLES: '+rawPath.curvePoints.length+' pts', c:'#ff9933'}, {t:'ARC LEN: '+rawPath.totalLength.toFixed(0)+' px', c:'#ccbbaa'}, {t:'Riemann: coarse', c:'#ccbbaa'}];
+  } else {
+    return isRight
+      ? [{t:'REPARAM: ON', c:'#77ff99'}, {t:'POS: getPositionAtDistance(d)', c:'#77ff99'}, {t:'SPEED: '+(sh.actualSpeedMethod>0?sh.actualSpeedMethod.toFixed(0)+' px/s ✓':'—'), c:'#aabbff'}, {t:'Motion: constant speed', c:'#00ffee'}]
+      : [{t:'REPARAM: OFF', c:'#ff7777'}, {t:'POS: curvePoints[index]', c:'#ff9933'}, {t:'SPEED: '+(sh.actualSpeedRaw>0?sh.actualSpeedRaw.toFixed(0)+' px/s ⚡':'—'), c:'#ccbbaa'}, {t:'Motion: uneven', c:'#ccbbaa'}];
+  }
+}
+
+// Pipeline strip: Waypoints → Catmull-Rom → Arc Length → Reparameterization
+// mode: 'linear' | 'catmull' | 'full'
+function drawPipelineStrip(c, panX, panY, panW, mode) {
+  const stages = [
+    { name:'Waypoints',   ok: true },
+    { name:'Catmull-Rom', ok: mode !== 'linear' },
+    { name:'Arc Length',  ok: mode === 'full' },
+    { name:'Reparam',     ok: mode === 'full' },
+  ];
+  c.save();
+  c.fillStyle = 'rgba(0,0,14,0.75)';
+  c.fillRect(panX + 4, panY - 20, panW - 8, 28);
+  c.font = 'bold 13px monospace';
+  const slotW = (panW - 8) / stages.length;
+  stages.forEach((s, i) => {
+    const ix = panX + 4 + i * slotW + 6;
+    c.fillStyle = s.ok ? '#55ee77' : '#ff5555';
+    c.textAlign = 'left';
+    c.fillText(s.name + (s.ok ? ' ✓' : ' ✗'), ix, panY);
+    if (i < stages.length - 1) {
+      c.fillStyle = '#556677';
+      c.fillText('→', panX + 4 + (i + 0.82) * slotW, panY);
+    }
+  });
+  c.restore();
+}
+
+// Impact Ability Lab — visuals only (paths, shards, bounces, balls, burst rings),
+// drawn in source coords. The three-terminal layout clips/transforms each half.
+function drawImpactVisualsAll(c) {
+  if (!DS.impactShowcase) return;
+  const sh = DS.impactShowcase;
+  const RAW_COL = '#ff7733', MET_COL = '#00ffcc';
+
+  // Floor platforms
+  c.fillStyle = COL.plat;
+  c.fillRect(50, 870, DEMO_HW-100, 30); c.fillRect(DEMO_HW+50, 870, DEMO_HW-100, 30);
+  c.fillStyle = COL.platTop;
+  c.fillRect(50, 870, DEMO_HW-100, 5);  c.fillRect(DEMO_HW+50, 870, DEMO_HW-100, 5);
+
+  // ===== LEFT PANEL: raw / no-method =====
+
+  // Primary path: dashed straight line
+  c.save(); c.globalAlpha = 0.50; c.strokeStyle = RAW_COL; c.lineWidth = 3; c.setLineDash([14,8]);
+  c.beginPath();
+  sh.leftPath.linearSegments.forEach((p,i) => i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y));
+  c.stroke(); c.setLineDash([]); c.restore();
+
+  // Waypoints P0-P3 with labels (raw side uses same waypoints as the path, showing "no curve")
+  sh.leftPath.waypoints.forEach((wp,i) => {
+    c.beginPath(); c.arc(wp.x,wp.y,7,0,Math.PI*2); c.fillStyle=COL.waypoint; c.fill();
+    c.fillStyle='#000'; c.font='bold 11px monospace'; c.textAlign='center'; c.fillText('P'+i,wp.x,wp.y+4);
+  });
+  // Function tag: no Catmull-Rom used
+  const lmid = sh.leftPath.waypoints[1];
+  c.font='bold 13px monospace'; c.fillStyle='#ff7755'; c.textAlign='center';
+  c.fillText('(no buildCurve)', lmid.x + 60, lmid.y - 18);
+
+  const leftEndSeg = sh.leftPath.linearSegments;
+  const leftEndPt  = leftEndSeg[leftEndSeg.length - 1];
+
+  // Moving ball on primary path
+  if (sh.leftPhase === 'primary') {
+    const lPos = linearPosAtDist(leftEndSeg, Math.min(sh.leftDist, linearSegLen(leftEndSeg)));
+    c.save(); c.shadowBlur=12; c.shadowColor=RAW_COL; c.fillStyle=RAW_COL;
+    c.beginPath(); c.arc(lPos.x,lPos.y,14,0,Math.PI*2); c.fill(); c.shadowBlur=0; c.restore();
+  }
+
+  // Raw burst (heavy): straight-line spikes, no Catmull-Rom
+  if (sh.type === 'heavy' && (sh.leftPhase === 'rawburst' || sh.leftPhase === 'done')) {
+    const alpha = sh.leftPhase === 'rawburst' ? 0.85 : 0.45;
+    // Solid radial burst ring (static, no curve)
+    c.save(); c.globalAlpha = alpha * 0.35;
+    c.fillStyle = '#ff4400';
+    c.beginPath(); c.arc(leftEndPt.x, leftEndPt.y, 80, 0, Math.PI*2); c.fill();
+    c.restore();
+    // Straight-line shard rays
+    c.save(); c.globalAlpha = alpha; c.strokeStyle = '#ff8833'; c.lineWidth = 3;
+    (sh.leftShardEndpoints || []).forEach(ep => {
+      c.beginPath(); c.moveTo(leftEndPt.x, leftEndPt.y); c.lineTo(ep.x, ep.y); c.stroke();
+      // dot at ray tip
+      c.fillStyle = '#ff5500'; c.beginPath(); c.arc(ep.x,ep.y,5,0,Math.PI*2); c.fill();
+    });
+    c.restore();
+    c.fillStyle = sh.leftPhase === 'rawburst' ? '#ff8833' : '#775533';
+    c.font = 'bold 18px monospace'; c.textAlign = 'center';
+    c.fillText(sh.leftPhase === 'rawburst' ? 'RAW BURST ✗' : '✗ Straight rays only', leftEndPt.x, leftEndPt.y - 90);
+  }
+
+  // Raw bounce (twin/spread): straight-line paths, no arc
+  if (sh.type !== 'heavy' && (sh.leftBouncePaths||[]).length > 0) {
+    sh.leftBouncePaths.forEach((lbp, bi) => {
+      const isActive = bi <= sh.leftActiveBouncePath;
+      const isDone   = sh.leftPhase === 'done';
+      const alpha    = (isActive || isDone) ? 0.60 : 0.20;
+      c.save(); c.globalAlpha = alpha; c.strokeStyle = '#ff9944'; c.lineWidth = 3;
+      c.setLineDash([10, 6]);
+      c.beginPath();
+      lbp.linearSegments.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+      c.stroke(); c.setLineDash([]); c.restore();
+    });
+    // Moving ball on current raw bounce path
+    if (sh.leftPhase === 'rawbounce') {
+      const curLBP = sh.leftBouncePaths[sh.leftActiveBouncePath];
+      const bPos = linearPosAtDist(curLBP.linearSegments,
+        Math.min(sh.leftBounceActiveDist, linearSegLen(curLBP.linearSegments)));
+      c.save(); c.shadowBlur=12; c.shadowColor='#ff9944'; c.fillStyle='#ff9944';
+      c.beginPath(); c.arc(bPos.x,bPos.y,12,0,Math.PI*2); c.fill(); c.shadowBlur=0; c.restore();
+      c.fillStyle='#ff8833'; c.font='bold 15px monospace'; c.textAlign='center';
+      c.fillText(`Raw Bounce ${sh.leftActiveBouncePath+1}`, bPos.x, bPos.y-22);
+    }
+    if (sh.leftPhase === 'done') {
+      const lastLP = sh.leftBouncePaths[sh.leftBouncePaths.length-1];
+      const lastPt = lastLP.linearSegments[lastLP.linearSegments.length-1];
+      c.fillStyle = '#885533'; c.font = '15px monospace'; c.textAlign = 'center';
+      c.fillText('✗ Angular bounce — no smooth path', lastPt.x - 20, lastPt.y - 18);
+    }
+  }
+
+  // (raw stats now drawn in the left terminal frame by renderDemoLab)
+
+  // ===== RIGHT PANEL: full Catmull-Rom method =====
+
+  // Primary Catmull-Rom path with sampled points
+  c.save(); c.globalAlpha=0.55; c.strokeStyle=MET_COL; c.lineWidth=3;
+  c.beginPath();
+  sh.rightPrimary.curvePoints.forEach((p,i)=>i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y));
+  c.stroke();
+  c.globalAlpha=0.55;
+  sh.rightPrimary.curvePoints.forEach((p,i)=>{if(i%8===0){c.beginPath();c.arc(p.x,p.y,4,0,Math.PI*2);c.fillStyle=COL.sampled;c.fill();}});
+  c.restore();
+
+  // Waypoints P0-P3
+  sh.rightPrimary.waypoints.forEach((wp,i)=>{
+    c.beginPath();c.arc(wp.x,wp.y,7,0,Math.PI*2);c.fillStyle=COL.waypoint;c.fill();
+    c.fillStyle='#000';c.font='bold 11px monospace';c.textAlign='center';c.fillText('P'+i,wp.x,wp.y+4);
+  });
+
+  // Function tag: buildCurve label
+  const rmid = sh.rightPrimary.waypoints[1];
+  c.save(); c.fillStyle='rgba(0,0,10,0.75)'; c.fillRect(rmid.x+10, rmid.y-35, 200, 22); c.restore();
+  c.font='bold 13px monospace'; c.fillStyle='#00ffcc'; c.textAlign='left';
+  c.fillText('buildCurve(P0–P3)', rmid.x + 14, rmid.y - 18);
+
+  // Function tag: computeArcLengths label
+  const rsamp = sh.rightPrimary.curvePoints[Math.floor(sh.rightPrimary.curvePoints.length * 0.55)];
+  c.save(); c.fillStyle='rgba(0,0,10,0.75)'; c.fillRect(rsamp.x+8, rsamp.y-26, 210, 22); c.restore();
+  c.font='bold 13px monospace'; c.fillStyle='#88ffcc'; c.textAlign='left';
+  c.fillText('computeArcLengths()', rsamp.x + 10, rsamp.y - 10);
+
+  const endPt=sh.rightPrimary.curvePoints[sh.rightPrimary.curvePoints.length-1];
+
+  // Numerical bounce paths (twin/spread)
+  if (sh.type!=='heavy' && sh.bouncePaths.length>0) {
+    sh.bouncePaths.forEach((bp,bi)=>{
+      const alpha = bi<=sh.rightActiveBouncePath ? 0.55 : 0.22;
+      c.save(); c.globalAlpha=alpha; c.strokeStyle='#88ffcc'; c.lineWidth=2.5; c.setLineDash([8,5]);
+      c.beginPath();bp.curvePoints.forEach((p,i)=>i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y));
+      c.stroke();c.setLineDash([]);
+      c.globalAlpha=alpha*0.9;
+      bp.curvePoints.forEach((p,i)=>{if(i%8===0){c.beginPath();c.arc(p.x,p.y,3,0,Math.PI*2);c.fillStyle='#aaffcc';c.fill();}});
+      c.restore();
+      // Label bounce paths with rebuildBouncePath tag
+      if (bi === 0) {
+        const bLabelPt = bp.curvePoints[Math.floor(bp.curvePoints.length * 0.3)];
+        c.save(); c.fillStyle='rgba(0,0,10,0.75)'; c.fillRect(bLabelPt.x+6, bLabelPt.y-27, 210, 22); c.restore();
+        c.font='bold 13px monospace'; c.fillStyle='#77ff99'; c.textAlign='left';
+        c.fillText('rebuildBouncePath()', bLabelPt.x + 8, bLabelPt.y - 10);
+      }
+    });
+  }
+
+  // Heavy shard paths (Catmull-Rom shards)
+  if (sh.type==='heavy' && (sh.rightPhase==='burst'||sh.rightPhase==='done')) {
+    sh.shardPaths.forEach(sp=>{
+      c.save(); c.globalAlpha=sh.rightPhase==='burst'?0.75:0.35;
+      c.strokeStyle='#ffcc44'; c.lineWidth=2;
+      c.beginPath();sp.curvePoints.forEach((p,i)=>i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y));c.stroke();
+      c.restore();
+    });
+    // Function tag on shard paths
+    if (sh.shardPaths.length > 0) {
+      const shardMid = sh.shardPaths[0].curvePoints[Math.floor(sh.shardPaths[0].curvePoints.length * 0.5)];
+      c.save(); c.fillStyle='rgba(0,0,10,0.75)'; c.fillRect(shardMid.x+6, shardMid.y-27, 196, 22); c.restore();
+      c.font='bold 13px monospace'; c.fillStyle='#ffdd55'; c.textAlign='left';
+      c.fillText('buildCurve() shard', shardMid.x + 8, shardMid.y - 8);
+    }
+    if (sh.rightPhase==='burst') {
+      const ratio=1-sh.burstTimer/1.8;
+      const ringR=Math.max(2,HEAVY_IMPACT_RADIUS*ratio);
+      c.save(); c.globalAlpha=sh.burstTimer/1.8;
+      c.fillStyle='#ff880022';c.beginPath();c.arc(endPt.x,endPt.y,HEAVY_IMPACT_RADIUS,0,Math.PI*2);c.fill();
+      c.strokeStyle='#ff8800';c.lineWidth=6;
+      c.beginPath();c.arc(endPt.x,endPt.y,ringR,0,Math.PI*2);c.stroke();
+      c.restore();
+      c.save();c.fillStyle='#ffcc44';c.font='bold 20px monospace';c.textAlign='center';
+      c.shadowBlur=14;c.shadowColor='#ffcc44';
+      c.fillText('NUMERICAL BURST ✓',endPt.x,endPt.y-HEAVY_IMPACT_RADIUS-14);
+      c.shadowBlur=0;c.restore();
+    }
+  }
+
+  // Moving ball (right primary phase)
+  if (sh.rightPhase==='primary') {
+    const rPos=getPositionAtDistance(sh.rightPrimary.curvePoints,sh.rightPrimary.arcLengths,sh.rightDist);
+    // Function tag near ball
+    c.save(); c.fillStyle='rgba(0,0,10,0.80)'; c.fillRect(rPos.x-118,rPos.y-38,236,22); c.restore();
+    c.font='bold 13px monospace'; c.fillStyle='#00ffee'; c.textAlign='center';
+    c.fillText('getPositionAtDistance(d)', rPos.x, rPos.y - 22);
+    c.save();c.shadowBlur=18;c.shadowColor=MET_COL;c.fillStyle=MET_COL;
+    c.beginPath();c.arc(rPos.x,rPos.y,14,0,Math.PI*2);c.fill();c.shadowBlur=0;c.restore();
+  } else if (sh.rightPhase==='bounce') {
+    const curBP=sh.bouncePaths[sh.rightActiveBouncePath];
+    const rPos=getPositionAtDistance(curBP.curvePoints,curBP.arcLengths,sh.rightBounceActiveDist);
+    c.save(); c.fillStyle='rgba(0,0,10,0.80)'; c.fillRect(rPos.x-118,rPos.y-38,236,22); c.restore();
+    c.font='bold 13px monospace'; c.fillStyle='#aaffcc'; c.textAlign='center';
+    c.fillText('getPositionAtDistance(d)', rPos.x, rPos.y - 22);
+    c.save();c.shadowBlur=18;c.shadowColor='#88ffcc';c.fillStyle='#88ffcc';
+    c.beginPath();c.arc(rPos.x,rPos.y,12,0,Math.PI*2);c.fill();c.shadowBlur=0;c.restore();
+    c.fillStyle='#ccffee';c.font='bold 15px monospace';c.textAlign='center';
+    c.fillText(`Bounce ${sh.rightActiveBouncePath+1}`,rPos.x,rPos.y+28);
+  }
+
+  // (numerical stats now drawn in the right terminal frame by renderDemoLab)
+}
+
+// Impact Ability Lab stat lines for the terminal stat blocks (raw vs method).
+function impactStatLines(isRight) {
+  const sh = DS.impactShowcase;
+  if (!sh) return [];
+  if (isRight) {
+    const lines = [
+      {t:'CURVE: Catmull-Rom ON', c:'#77ff99'},
+      {t:'ARC LEN: '+sh.rightPrimary.totalLength.toFixed(0)+' px', c:'#77ff99'},
+      {t:'REPARAM: ON', c:'#77ff99'},
+    ];
+    if (sh.type==='heavy') {
+      lines.push({t:'BURST: buildCurve() × '+HEAVY_SHARD_COUNT, c:'#ffdd55'});
+      lines.push({t:'RADIUS: '+HEAVY_IMPACT_RADIUS+' px', c:'#ffaa44'});
+    } else {
+      lines.push({t:'BOUNCES: '+(sh.type==='twin'?2:1)+'× rebuildBouncePath()', c:'#aabbff'});
+      lines.push({t:'PHASE: '+sh.rightPhase, c:'#aabbff'});
+    }
+    return lines;
+  }
+  const lines = [
+    {t:'CURVE: OFF', c:'#ff7777'},
+    {t:'ARC LEN: OFF', c:'#ff7777'},
+    {t:'REPARAM: OFF', c:'#ff7777'},
+    {t:'PATH: straight angular line', c:'#ff9933'},
+  ];
+  if (sh.type==='heavy') lines.push({t:'BURST: straight rays only', c:'#ff7777'});
+  else lines.push({t:'BOUNCES: '+(sh.type==='twin'?2:1)+'× straight lines', c:'#ff7777'});
+  return lines;
+}
+
+// ── Demo Lab: three-terminal fullscreen workspace (Patch L) ──────────────────
+// Left terminal  = raw / without numerical method
+// Right terminal = with full numerical method
+// Bottom terminal = method pipeline / explanation / controls
+function renderDemoLab(c) {
+  const comp = DS.comparison;
+  const RAW_ACCENT = '#ff8844', MET_ACCENT = '#33ddbb', PIPE_ACCENT = '#33aaee';
+  const L = DEMO_LEFT_TERM, R = DEMO_RIGHT_TERM, B = DEMO_BOTTOM_TERM;
+
+  // Workspace background — terminal tiling (not too dark)
+  c.fillStyle = '#0b1020'; c.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT);
+  c.strokeStyle = 'rgba(120,150,200,0.05)'; c.lineWidth = 1;
+  for (let x = 0; x <= DESIGN_WIDTH; x += 80)  { c.beginPath(); c.moveTo(x,0); c.lineTo(x,DESIGN_HEIGHT); c.stroke(); }
+  for (let y = 0; y <= DESIGN_HEIGHT; y += 80) { c.beginPath(); c.moveTo(0,y); c.lineTo(DESIGN_WIDTH,y); c.stroke(); }
+
+  // Right-side method mode (drives pipeline + stats)
+  let rightMode = 'full';
+  if ((comp==='dash'||comp==='projectile'||comp==='meteor') && DS.rightEnt) rightMode = DS.rightEnt.mode;
+
+  // Source-space vertical band mapped into each pane (uniform scale, see drawDemoPaneContent)
+  let bandY, bandH;
+  if (comp==='meteor')        { bandY = 40;  bandH = 900; }
+  else if (comp==='powerups') { bandY = 220; bandH = 470; }
+  else if (comp==='impact')   { bandY = 470; bandH = 410; }
+  else                        { bandY = 520; bandH = 420; } // dash / projectile
+
+  function paneVisual(isRight) {
+    if (comp==='powerups')    drawShowcaseVisualsAll(c);
+    else if (comp==='impact') drawImpactVisualsAll(c);
+    else                      drawDemoVisual(c, isRight ? DS.rightEnt : DS.leftEnt, isRight);
+  }
+
+  // ===== LEFT TERMINAL — raw / without method =====
+  drawTerminalWindow(c, L.x, L.y, L.w, L.h, RAW_ACCENT);
+  drawTerminalHeader(c, L.x, L.y, L.w, '[raw@methodlab ~]$ compare --no-method', RAW_ACCENT);
+  c.font='bold 18px monospace'; c.fillStyle=RAW_ACCENT; c.textAlign='center';
+  c.fillText('WITHOUT NUMERICAL METHOD', L.x + L.w/2, L.y + 46);
+  drawDemoPaneContent(c, L, 0, bandY, DEMO_HW, bandH, () => paneVisual(false));
+  drawDemoStatBlock(c, L, demoLeftStatLines(comp), RAW_ACCENT);
+
+  // ===== RIGHT TERMINAL — with full numerical method =====
+  drawTerminalWindow(c, R.x, R.y, R.w, R.h, MET_ACCENT);
+  drawTerminalHeader(c, R.x, R.y, R.w, '[method@lab ~]$ compare --full', MET_ACCENT);
+  c.font='bold 18px monospace'; c.fillStyle=MET_ACCENT; c.textAlign='center';
+  c.fillText('WITH FULL NUMERICAL METHOD', R.x + R.w/2, R.y + 46);
+  drawDemoPaneContent(c, R, DEMO_HW, bandY, DEMO_HW, bandH, () => paneVisual(true));
+  drawDemoStatBlock(c, R, demoRightStatLines(comp, rightMode), MET_ACCENT);
+
+  // ===== BOTTOM TERMINAL — pipeline / explanation / controls =====
+  drawDemoBottomTerminal(c, B, comp, rightMode, PIPE_ACCENT);
+}
+
+// Interior rectangle of a terminal (below the title bar + subtitle line).
+function demoPaneInterior(term) {
+  const padX = 16, padBottom = 16, topReserve = 56;
+  return { ix: term.x+padX, iy: term.y+topReserve, iw: term.w-padX*2, ih: term.h-topReserve-padBottom };
+}
+
+// Clip to a terminal interior and map a source-space rect into it with uniform
+// scale (no distortion), then run fn() which draws Demo Lab visuals in source coords.
+function drawDemoPaneContent(c, term, srcX, srcY, srcW, srcH, fn) {
+  const { ix, iy, iw, ih } = demoPaneInterior(term);
+  const scale = Math.min(iw/srcW, ih/srcH);
+  const dw = srcW*scale, dh = srcH*scale;
+  const ox = ix + (iw-dw)/2, oy = iy + (ih-dh)/2;
+  c.save();
+  c.beginPath(); c.rect(ix, iy, iw, ih); c.clip();
+  c.translate(ox, oy); c.scale(scale, scale); c.translate(-srcX, -srcY);
+  fn();
+  c.restore();
+}
+
+// Stat text block, drawn top-left inside a terminal over the visuals (dark backing).
+function drawDemoStatBlock(c, term, lines, accent) {
+  if (!lines || !lines.length) return;
+  const bx = term.x + 18, by = term.y + 78;
+  c.font='16px monospace';
+  let maxw = 0;
+  lines.forEach(l => { const w = c.measureText(l.t).width; if (w>maxw) maxw=w; });
+  const boxW = Math.min(maxw + 24, term.w - 36);
+  const boxH = lines.length*23 + 14;
+  c.save();
+  c.fillStyle='rgba(2,8,18,0.80)';
+  c.strokeStyle = (accent||'#345')+'55'; c.lineWidth = 1;
+  c.beginPath(); c.roundRect(bx-10, by-20, boxW, boxH, 4); c.fill(); c.stroke();
+  c.textAlign='left';
+  let yy = by;
+  lines.forEach(l => { c.fillStyle = l.c || '#aabbcc'; c.fillText(l.t, bx, yy); yy += 23; });
+  c.restore();
+}
+
+// Stat lines for the dash/projectile/meteor comparison (power-up + impact have own helpers).
+function demoLeftStatLines(comp) {
+  if (comp==='powerups') return showcaseStatLines(false);
+  if (comp==='impact')   return impactStatLines(false);
+  return [
+    {t:'CURVE: OFF', c:'#ff7777'},
+    {t:'ARC LEN: OFF', c:'#ff7777'},
+    {t:'REPARAM: OFF', c:'#ff7777'},
+    {t:'PATH: angular segments', c:'#ff9933'},
+    {t:'SPEED: inconsistent', c:'#ccbbaa'},
+  ];
+}
+function demoRightStatLines(comp, rightMode) {
+  if (comp==='powerups') return showcaseStatLines(true);
+  if (comp==='impact')   return impactStatLines(true);
+  const ent = DS.rightEnt;
+  const isFull = rightMode === 'full';
+  const tl = ent ? totalLen(ent.pathData, ent.mode) : 0;
+  const lines = [
+    {t:'CURVE: Catmull-Rom ON', c:'#77ff99'},
+    {t:'ARC LEN: '+(isFull ? tl.toFixed(0)+' px' : 'OFF'), c:isFull?'#77ff99':'#ff7777'},
+    {t:'REPARAM: '+(isFull ? 'distance → position' : 'OFF'), c:isFull?'#77ff99':'#ff7777'},
+    {t:'SAMPLES: '+(ent?ent.pathData.curvePoints.length:0)+' pts', c:'#aabbff'},
+  ];
+  if (ent) lines.push({t:'DIST: '+ent.distanceTraveled.toFixed(0)+' / '+tl.toFixed(0)+' px', c:'#aabbff'});
+  lines.push({t:'SPEED: '+(isFull ? 'constant '+(ent?ent.speed:0)+' px/s' : 'raw param'), c:isFull?'#aabbff':'#ffbb55'});
+  return lines;
+}
+
+// Dash / Projectile / Meteor — visuals only, in source coords (no chrome/stats).
+function drawDemoVisual(c, ent, isRight) {
+  const panX = isRight ? DEMO_HW : 0;
+  // Floor platform
+  c.fillStyle = COL.plat;    c.fillRect(panX+50, 870, DEMO_HW-100, 30);
+  c.fillStyle = COL.platTop; c.fillRect(panX+50, 870, DEMO_HW-100, 5);
+  if (!ent || !ent.pathData) return;
+
+  const pd = ent.pathData;
+  const mode = ent.mode;
+
+  // Full path
+  c.save();
+  c.globalAlpha = 0.55;
+  if (mode === 'linear') {
+    c.strokeStyle = COL.linear; c.lineWidth = 3; c.setLineDash([12,8]);
+    c.beginPath();
+    pd.linearSegments.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+    c.stroke(); c.setLineDash([]);
+  } else {
+    c.strokeStyle = COL.spline; c.lineWidth = 3; c.setLineDash([]);
+    c.beginPath();
+    pd.curvePoints.forEach((p,i) => i===0 ? c.moveTo(p.x,p.y) : c.lineTo(p.x,p.y));
+    c.stroke();
+    c.globalAlpha = 0.65;
+    pd.curvePoints.forEach((p,i) => {
+      if (i % 8 === 0) { c.beginPath(); c.arc(p.x,p.y,4,0,Math.PI*2); c.fillStyle = COL.sampled; c.fill(); }
+    });
+  }
+  c.restore();
+
+  // Waypoints
+  c.save(); c.globalAlpha = 0.9;
+  pd.waypoints.forEach((wp,i) => {
+    c.beginPath(); c.arc(wp.x, wp.y, 8, 0, Math.PI*2);
+    c.fillStyle = COL.waypoint; c.fill();
+    c.fillStyle = '#111'; c.font = 'bold 13px monospace'; c.textAlign = 'center';
+    c.fillText('P'+i, wp.x, wp.y+5);
+  });
+  c.restore();
+
+  // Moving entity
+  c.save(); c.globalAlpha = 1;
+  const ec = isRight ? COL.spline : COL.linear;
+  if (ent.type === 'meteor') {
+    if (ent.warningTimer > 0) {
+      const pulse = 0.5 + 0.5 * Math.abs(Math.sin(Date.now() / 280));
+      c.globalAlpha = 0.55 + 0.3 * pulse;
+      c.strokeStyle = '#ffee44'; c.lineWidth = 4.5; c.setLineDash([16, 9]);
+      c.beginPath();
+      pd.curvePoints.forEach((p,i) => i===0?c.moveTo(p.x,p.y):c.lineTo(p.x,p.y));
+      c.stroke(); c.setLineDash([]);
+      c.globalAlpha = 0.75 + 0.25 * pulse;
+      c.fillStyle = '#ffee44'; c.font = 'bold 22px monospace'; c.textAlign = 'center';
+      c.shadowBlur = 16; c.shadowColor = '#ffee44';
+      c.fillText('⚠  METHOD STORM WARNING  ⚠', panX + DEMO_HW/2, DESIGN_HEIGHT/2 - 10);
+      c.shadowBlur = 0;
+    } else {
+      c.shadowBlur = 26; c.shadowColor = '#ffee66';
+      c.fillStyle = '#ffee66';
+      c.beginPath(); c.arc(ent.x, ent.y, 22, 0, Math.PI*2); c.fill();
+      c.shadowBlur = 0;
+      c.fillStyle = '#ffffff';
+      c.beginPath(); c.arc(ent.x, ent.y, 9, 0, Math.PI*2); c.fill();
+    }
+  } else {
+    if (!isRight) { c.shadowBlur = 0; }
+    else { c.shadowBlur = 18; c.shadowColor = COL.spline; }
+    if (ent.type === 'dash') {
+      c.fillStyle = ec; c.fillRect(ent.x - 20, ent.y - 35, 40, 70);
+    } else {
+      c.fillStyle = ec; c.beginPath(); c.arc(ent.x, ent.y, 14, 0, Math.PI*2); c.fill();
+    }
+    c.shadowBlur = 0;
+  }
+  c.restore();
+}
+
+// Large readable pipeline strip for the bottom terminal.
+function drawDemoPipelineLine(c, x, y, mode) {
+  const stages = [
+    { name:'Waypoints',          ok:true },
+    { name:'Catmull-Rom',        ok: mode!=='linear' },
+    { name:'Arc Length',         ok: mode==='full' },
+    { name:'Reparameterization', ok: mode==='full' },
+  ];
+  c.textAlign='left'; c.font='bold 17px monospace';
+  c.fillStyle='#88aacc'; c.fillText('PIPELINE: ', x, y);
+  let cx = x + c.measureText('PIPELINE: ').width;
+  stages.forEach((s,i) => {
+    const label = s.name + (s.ok ? ' ✓' : ' ✗');
+    c.fillStyle = s.ok ? '#55ee88' : '#ff6666';
+    c.fillText(label, cx, y);
+    cx += c.measureText(label).width;
+    if (i < stages.length-1) {
+      c.fillStyle = '#6688aa'; c.fillText('  →  ', cx, y);
+      cx += c.measureText('  →  ').width;
+    }
+  });
+}
+
+// Bottom terminal: mode title, pipeline, explanation, function list, controls.
+function drawDemoBottomTerminal(c, B, comp, rightMode, accent) {
+  drawTerminalWindow(c, B.x, B.y, B.w, B.h, accent);
+  drawTerminalHeader(c, B.x, B.y, B.w, '[pipeline@methodlab ~]$ explain', accent);
+
+  const titles = {
+    dash:'Spline Dash Comparison', projectile:'Projectile Comparison',
+    meteor:'Meteor Hazard Comparison', powerups:'Power-Up Showcase', impact:'Impact Ability Lab',
+  };
+  const whys = {
+    dash:'Catmull-Rom removes angular segments. Arc length measures the curve. Reparameterization moves by distance for stable dash speed.',
+    projectile:'Catmull-Rom smooths the projectile arc. Arc length measures it. Reparameterization keeps the projectile at constant speed.',
+    meteor:'Catmull-Rom builds a readable hazard path. Arc length measures it. Reparameterization gives a fair, constant fall speed.',
+    powerups:'Power-ups scale curve offset, sample density, or speed. The same numerical pipeline stays smooth and stable as values change.',
+    impact:'On impact the path regenerates: Catmull-Rom shards/bounces are built, measured by arc length, and followed at constant speed.',
+  };
+
+  const tx = B.x + 24;
+  let ty = B.y + 56;
+
+  // MODE
+  c.textAlign='left';
+  c.font='bold 20px monospace'; c.fillStyle='#ffffff'; c.fillText('MODE: ', tx, ty);
+  c.fillStyle=accent; c.fillText(titles[comp]||'Demo Lab', tx + 86, ty);
+  ty += 36;
+
+  // PIPELINE
+  drawDemoPipelineLine(c, tx, ty, rightMode);
+  ty += 38;
+
+  // WHY
+  c.font='16px monospace'; c.fillStyle='#9fb4cc'; c.textAlign='left';
+  c.fillText('WHY:  ' + (whys[comp]||''), tx, ty);
+  ty += 30;
+
+  // FUNCS
+  c.font='bold 16px monospace'; c.fillStyle='#66ddaa';
+  c.fillText('FUNCS:  buildCurve()  →  computeArcLengths()  →  getPositionAtDistance()', tx, ty);
+  ty += 30;
+
+  // KEYS
+  let keys = 'KEYS:  G Dash | H Projectile | M Meteor | U Power-Ups | B Impact | Space Restart | TAB Exit | 1/2/3 Method';
+  if (comp==='powerups') keys = 'KEYS:  Q/E Module | ←/→ Slider | Space Restart | TAB Exit | G/H/M/B switch | 1/2/3 Method';
+  if (comp==='impact')   keys = 'KEYS:  Q/E Shot Type | Space Restart | TAB Exit | G/H/M/U switch | 1/2/3 Method';
+  c.font='14px monospace'; c.fillStyle='#5f7da0';
+  c.fillText(keys, tx, ty);
+
+  // Power-Up slider readout (right side of bottom terminal)
+  if (comp==='powerups' && DS.puShowcase) {
+    const sh = DS.puShowcase;
+    const sliderX = B.x + B.w - 560, sliderY = B.y + 60, sliderW = 520;
+    const MOD = { curveAmplifier:'Curve Amplifier', sampleDensityBoost:'Sample Density Boost', constantSpeedSurge:'Constant-Speed Surge' };
+    let valTxt;
+    if (sh.module==='curveAmplifier')          valTxt = Math.round(lerp(80,350,sh.slider))+' px offset';
+    else if (sh.module==='sampleDensityBoost') valTxt = Math.round(lerp(10,120,sh.slider))+' steps/seg';
+    else                                       valTxt = Math.round(lerp(300,1200,sh.slider))+' px/s';
+    c.textAlign='left'; c.font='bold 16px monospace'; c.fillStyle='#44ccff';
+    c.fillText('◄  '+(MOD[sh.module]||sh.module)+'  ►', sliderX, sliderY);
+    drawSlider(c, sliderX, sliderY+18, sliderW, 'Value', valTxt, sh.slider);
+  }
+  // Impact shot-type indicator (right side)
+  if (comp==='impact' && DS.impactShowcase) {
+    const sh = DS.impactShowcase;
+    const sxr = B.x + B.w - 380, syr = B.y + 64;
+    const SUB = { heavy:'Heavy — Grenade Burst', twin:'Twin — 2× Bounce', spread:'Spread — 1× Bounce' };
+    c.textAlign='left'; c.font='bold 18px monospace'; c.fillStyle='#ffcc44';
+    c.fillText('◄ Q/E ►   '+(SUB[sh.type]||sh.type), sxr, syr);
+  }
+
+  // Auto-loop progress bar (bottom edge of bottom terminal)
+  const prog = Math.min(DS.timer / getDemoCycleDuration(), 1);
+  const barX = B.x + 24, barY = B.y + B.h - 22, barW = B.w - 48;
+  c.fillStyle='#0a1424'; c.fillRect(barX, barY, barW, 8);
+  c.fillStyle=accent;    c.fillRect(barX, barY, barW*prog, 8);
+}
+
+// =====================================================
+// 13. EDUCATIONAL UI OVERLAY
+// =====================================================
+
+function renderOverlay(c) {
+  // Right panel — method info
+  const pw = 440, ph = 640, px = DESIGN_WIDTH - pw - 16, py = 16;
+  c.fillStyle = 'rgba(0,0,8,0.82)';
+  c.strokeStyle = '#334455'; c.lineWidth = 1.5;
+  c.beginPath(); c.rect(px, py, pw, ph); c.fill(); c.stroke();
+
+  c.textAlign = 'left';
+  let lx = px + 16, ly = py + 24;
+  function ln(t, col='#cccccc', bold=false) {
+    c.font = `${bold?'bold ':''}17px monospace`;
+    c.fillStyle = col; c.fillText(t, lx, ly); ly += 25;
+  }
+
+  const mm = GS.methodMode;
+  const isCat = mm !== 'linear';
+  const isFull = mm === 'full';
+
+  ln('SPLINE FIGHTER  —  Method Lab', '#ffffff', true); ly += 4;
+  const modeLabel = { versus:'VS LOCAL', practice:'PRACTICE', vsai:'VS AI', demoLab:'DEMO LAB' };
+  ln(`Game Mode:    ${modeLabel[GS.mode] || GS.mode.toUpperCase()}`, '#aaddff');
+  ln(`Method Mode:  ${METHOD_LABEL[mm]}`, '#ffdd44'); ly += 4;
+  ln('─── Active Ability ───', '#556677');
+  ln(statsInfo.abilityLabel || 'None', '#00ffff'); ly += 4;
+  ln('─── Numerical Methods ───', '#556677');
+  ln(`M1 Catmull-Rom:    ${isCat  ? '✓ ON' : '✗ OFF'}`, isCat  ? '#66ff88' : '#ff6666');
+  ln(`M2 Arc Length:     ${isFull ? '✓ '+statsInfo.arcLength.toFixed(0)+'px' : '✗ OFF'}`, isFull ? '#66ff88' : '#ff6666');
+  ln(`M3 Reparameterize: ${isFull ? '✓ ON' : '✗ OFF'}`, isFull ? '#66ff88' : '#ff6666'); ly += 4;
+  ln(`Sampled pts:  ${statsInfo.sampledCount}`, '#99aacc');
+  ln(`Distance:     ${statsInfo.distance.toFixed(0)} px`, '#99aacc');
+  ln(`Target Speed: ${statsInfo.speed} px/s`, '#99aacc');
+  ln(`Actual Speed: ${statsInfo.actualSpeed > 0 ? statsInfo.actualSpeed.toFixed(0) : '—'} px/s`,
+    statsInfo.actualSpeed > 0 ? '#ccff88' : '#556677'); ly += 4;
+  const [op1, op2] = GS.players;
+  ln('─── Power-Ups ───', '#556677');
+  const pu1str = op1.powerUp ? `${PU_LABEL[op1.powerUp.type] || op1.powerUp.type} ${op1.powerUp.timer.toFixed(1)}s` : 'None';
+  const pu2str = op2.powerUp ? `${PU_LABEL[op2.powerUp.type] || op2.powerUp.type} ${op2.powerUp.timer.toFixed(1)}s` : 'None';
+  const pu1col = op1.powerUp ? (PU_COL[op1.powerUp.type] || '#fff') : '#555';
+  const pu2col = op2.powerUp ? (PU_COL[op2.powerUp.type] || '#fff') : '#555';
+  ln(`P1: ${pu1str}`, pu1col);
+  ln(`P2: ${pu2str}`, pu2col); ly += 4;
+  ln('─── Shot Enhance ───', '#556677');
+  const p1enh = op1.shotEnhanceActive ? `ACTIVE ${op1.shotEnhanceTimer.toFixed(1)}s [${(SHOT_NAME[op1.activeShotMode]||'').toUpperCase()}]`
+    : op1.shotEnhanceCooldown > 0 ? `CD ${op1.shotEnhanceCooldown.toFixed(1)}s` : 'READY';
+  const p2enh = op2.shotEnhanceActive ? `ACTIVE ${op2.shotEnhanceTimer.toFixed(1)}s [${(SHOT_NAME[op2.activeShotMode]||'').toUpperCase()}]`
+    : op2.shotEnhanceCooldown > 0 ? `CD ${op2.shotEnhanceCooldown.toFixed(1)}s` : 'READY';
+  ln(`P1 ${SHOT_NAME[op1.shotMode]}: ${p1enh}`, op1.shotEnhanceActive ? '#ffee44' : '#888899');
+  ln(`P2 ${SHOT_NAME[op2.shotMode]}: ${p2enh}`, op2.shotEnhanceActive ? '#ffee44' : '#888899'); ly += 4;
+  // Permanent stat mods (compact — only non-default)
+  const _sm1 = op1.statMods, _sm2 = op2.statMods;
+  const _fmv = v => v.toFixed(2) + 'x';
+  const _mp1 = [], _mp2 = [];
+  if (Math.abs(_sm1.projectileSpeedMult   -1)>0.005) _mp1.push(`PS${_fmv(_sm1.projectileSpeedMult)}`);
+  if (Math.abs(_sm1.projectileCooldownMult-1)>0.005) _mp1.push(`PC${_fmv(_sm1.projectileCooldownMult)}`);
+  if (Math.abs(_sm1.dashSpeedMult         -1)>0.005) _mp1.push(`DS${_fmv(_sm1.dashSpeedMult)}`);
+  if (Math.abs(_sm1.dashCooldownMult      -1)>0.005) _mp1.push(`DC${_fmv(_sm1.dashCooldownMult)}`);
+  if (Math.abs(_sm1.shieldRegenMult       -1)>0.005) _mp1.push(`SR${_fmv(_sm1.shieldRegenMult)}`);
+  if (Math.abs(_sm2.projectileSpeedMult   -1)>0.005) _mp2.push(`PS${_fmv(_sm2.projectileSpeedMult)}`);
+  if (Math.abs(_sm2.projectileCooldownMult-1)>0.005) _mp2.push(`PC${_fmv(_sm2.projectileCooldownMult)}`);
+  if (Math.abs(_sm2.dashSpeedMult         -1)>0.005) _mp2.push(`DS${_fmv(_sm2.dashSpeedMult)}`);
+  if (Math.abs(_sm2.dashCooldownMult      -1)>0.005) _mp2.push(`DC${_fmv(_sm2.dashCooldownMult)}`);
+  if (Math.abs(_sm2.shieldRegenMult       -1)>0.005) _mp2.push(`SR${_fmv(_sm2.shieldRegenMult)}`);
+  if (_mp1.length || _mp2.length) {
+    ln(`P1 Mods: ${_mp1.slice(0,3).join(' ') || 'none'}`, '#88ccaa');
+    ln(`P2 Mods: ${_mp2.slice(0,3).join(' ') || 'none'}`, '#88ccaa');
+    ly += 4;
+  }
+  // Match time + storm level
+  const _matchMin = Math.floor(GS.matchTime / 60);
+  const _matchSec = Math.floor(GS.matchTime % 60);
+  const _tStr = `${_matchMin}:${_matchSec.toString().padStart(2,'0')}`;
+  const _stLv2 = getStormLevel();
+  const _mCfg2 = getMeteorSpawnConfig();
+  const _activeMCount = GS.meteors.filter(m => m.active).length;
+  ln(`Time: ${_tStr}   Storm: Lv ${_stLv2}`, '#aaddff'); ly += 4;
+  // Arena event line
+  const _anyM = GS.meteors.find(m => m.active);
+  const _hasWarn = _anyM && _anyM.phase === 'warning';
+  const _evtStr = _hasWarn ? '⚠ WARNING: Meteor!' : `Meteors: ${_activeMCount}/${_mCfg2.maxActive}  Next: ${GS.meteorTimer.toFixed(1)}s`;
+  const _evtCol = _hasWarn ? '#ffee44' : _activeMCount > 0 ? '#ff8833' : GS.meteorTimer < 5 ? '#ffdd44' : '#445566';
+  ln(`Arena: ${_evtStr}`, _evtCol);
+
+  // Left panel — controls
+  const cw = 390, ch = 262, cx2 = 16, cy2 = 16;
+  c.fillStyle = 'rgba(0,0,8,0.78)';
+  c.strokeStyle = '#334455'; c.lineWidth = 1.5;
+  c.beginPath(); c.rect(cx2, cy2, cw, ch); c.fill(); c.stroke();
+
+  lx = cx2+14; ly = cy2+24;
+  ln('CONTROLS', '#ffffff', true); ly += 2;
+  ln('P1: A/D move  W jump  F atk  S:Guard', COL.p1);
+  ln('    G:Dash  H:Proj  C:Shot  V:Enhance', COL.p1);
+  ln('P2: ←/→ move  ↑ jump  K atk  ↓:Guard', COL.p2);
+  ln('    L:Dash  ;:Proj  N:Shot  M:Enhance', COL.p2);
+  ln('1/2/3:Method  TAB:Demo  P:Practice', '#aaaacc');
+  ln('I:VS AI  R:Reset  \\:Hitbox Debug', '#aaaacc');
+  ln('C/N: cycle shot (Heavy→Twin→Spread)', '#bbaaff');
+  ln('Demo: G:Dash  H:Proj  M:Meteor  U:PU  B:Impact', '#aaaacc');
+}
+
+
+// =====================================================
+// 14. MAIN GAME LOOP
+// =====================================================
+
+function renderAll(ts) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  withVirtual(c => {
+    if (UI.menuOpen) {
+      drawMenuScene(c);        // zoom-out transition + CRT bg + remote + menu text
+    } else if (GS.mode === 'demoLab') {
+      renderDemoLab(c);
+    } else {
+      renderGame(c);
+      drawCRTOverlay(c);       // CRT scanlines + vignette over world
+      drawFourTerminalHUD(c);  // four terminal panels drawn sharp above CRT
+    }
+  });
+}
+
+function loop(ts) {
+  update(ts);
+  renderAll(ts);
+  requestAnimationFrame(loop);
+}
+
+// Boot
+loadAssets();
+initGameState();
+resizeCanvas();
+requestAnimationFrame(ts => { prevTime = ts; loop(ts); });
+</script>
+</body>
+</html>
