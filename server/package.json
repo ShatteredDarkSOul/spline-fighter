@@ -1,0 +1,13 @@
+{
+  "name": "spline-fighter-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted Socket.IO relay + room-code 1v1 pairing for Spline Fighter (foundation: connection + input relay, non-authoritative).",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.7.5"
+  }
+}

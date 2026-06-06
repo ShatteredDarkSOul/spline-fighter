@@ -1,5 +1,11 @@
 node_modules/
+server/node_modules/
 mydatabase.db
 .claude/
 *.png.bak
 dist/
+
+# Local testing artifacts (Playwright MCP + screenshots)
+.playwright-mcp/
+live-site.png
+local-preview.png

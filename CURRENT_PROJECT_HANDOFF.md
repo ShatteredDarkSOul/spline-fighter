@@ -1,8 +1,68 @@
 # CURRENT_PROJECT_HANDOFF.md
 # Spline Fighter: Method Lab Arena — Session Handoff
 
-Last updated after: **Patch I complete — Full UI Rehaul: CRT Menu + Terminal HUD + Demo Lab Dock**
-File size: **3759 lines** (`index.html`)
+Last updated after: **Phase 3 complete — Self-Hosted Socket.IO Online Multiplayer (foundation) + Vite build pipeline + security hardening**
+Previous milestone: Patch I — Full UI Rehaul: CRT Menu + Terminal HUD + Demo Lab Dock
+
+---
+
+## Phase 3 — Self-Hosted Online Multiplayer (Foundation)
+
+> **Scope note:** the academic spec docs say "no online multiplayer." That guidance was
+> **explicitly superseded by the user**, who requested a self-hosted online mode across multiple
+> sessions. The online layer is built as a **fully additive, isolated mode** — the four numerical
+> methods and every local mode (VS Local / VS AI / Practice / Demo Lab) are unchanged, so the
+> pristine assignment build still exists underneath.
+
+### Deployment / infrastructure
+- **Repo:** https://github.com/ShatteredDarkSOul/spline-fighter
+- **Live frontend:** https://shattereddarksoul.github.io/spline-fighter/
+- **Vite conversion verified** — `npm run dev` / `npm run build` / `npm run preview`. Game JS stays
+  inline in `index.html` (single-file source preserved); only the networking module is bundled.
+- **GitHub Pages deployment uses the Vite build output** — GitHub Actions (`.github/workflows/deploy.yml`)
+  builds `dist/` on push to `master` and publishes it to the `gh-pages` branch. `base: '/spline-fighter/'`.
+- Assets copied verbatim into `dist/assets/` via `vite-plugin-static-copy` (paths are string literals in JS).
+
+### What was implemented
+- **Self-hosted Socket.IO relay** (`server/`, standalone `package.json`): room-code 1v1 pairing,
+  input-intent relay, latency ping, peer-left cleanup. Run with `npm --prefix server start`; expose
+  via ngrok / Cloudflare Tunnel (see `server/README.md`).
+- **Client net module** (`src/net/netClient.js`, Vite-bundled): null-safe `window.SplineNet`
+  (connect / createRoom / joinRoom / sendInput / state / remoteInput / onEvent).
+- **index.html integration:** new `isRemote`/`netInput` on players; `getInput()` gained an
+  `isRemote → netInput` branch (the single input chokepoint, mirroring the AI `aiInput` pattern);
+  `updateDashCharge` + `updateGuard` routed through `getInput` (behavior-preserving for local/AI);
+  update-loop relay block; `VS ONLINE` menu entry + HTML `#net-overlay` for Server URL + room code.
+  Host = P1 / `players[0]`, Guest = P2 / `players[1]`.
+- **Local two-tab relay test passed** — connect → create room → join → both flip to
+  `GS.mode === 'online'`; a guest keypress moved the host's P2 (verified via Playwright).
+
+### Security hardening (post-review)
+- **DOM-based XSS fixed and verified.** A malicious server's room `code` / `join-error` reason
+  could reach `netEls.status.innerHTML`. Fixed with `escapeHtml()` on all dynamic values in
+  `renderNetStatus` (`index.html`) **and** `VALID_CODE` / `cleanCode` validation + fixed
+  join-error message mapping in `netClient.js`. All net-status `innerHTML` writes are now static
+  or escaped; re-review found no remaining high/medium findings.
+- **CORS `origin:'*'` replaced with an explicit allowlist** in `server/index.js`
+  (`localhost:5173/4173/4174/4175` + `https://shattereddarksoul.github.io`; no-Origin/CLI allowed;
+  unknown browser origins rejected with 400). Verified live against allowed/disallowed origins.
+- **R reset guarded in online mode** — pressing `R` while `GS.mode === 'online'` no longer calls
+  `resetMatch()` (which would desync the peers); it shows an "Online reset is not available yet."
+  float message instead. Reset is unchanged for all local modes.
+
+### Current limitations
+- **Online mode is non-authoritative** — each client simulates both players from relayed inputs, so
+  positions can **drift under latency** (no state sync / rollback yet).
+- **Cycle-shot and enhance one-shot keys are not relayed yet** — they are keydown one-shots handled
+  outside `getInput`, so a remote player cannot trigger them.
+- **No online reset / rematch protocol exists yet** — the R guard is local-only; there is no
+  server-authoritative reset/rematch.
+- **ngrok cross-device test still pending** — only local two-tab + localhost CORS verified; the
+  HTTPS-tunnel cross-device run (live Pages site ↔ ngrok server) has not been done.
+
+### Next milestone
+- **Phase 4 — server-authoritative movement only** (start narrow: authoritative positions before
+  any broader simulation migration).
 
 ---
 

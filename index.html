@@ -8,10 +8,81 @@
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#000; display:flex; justify-content:center; align-items:center; width:100vw; height:100vh; overflow:hidden; }
 canvas { display:block; }
+
+/* ── VS ONLINE connection overlay (HTML, sits over the canvas) ───────────── */
+#net-overlay {
+  position:fixed; inset:0; z-index:50;
+  display:none; align-items:center; justify-content:center;
+  background:rgba(0,0,0,0.72);
+  font-family:'Courier New', monospace; color:#cfe;
+}
+#net-overlay.open { display:flex; }
+#net-panel {
+  width:360px; max-width:92vw;
+  background:#0a1014; border:2px solid #2dd4bf;
+  box-shadow:0 0 24px rgba(45,212,191,0.35), inset 0 0 40px rgba(45,212,191,0.06);
+  padding:22px 22px 18px; border-radius:6px;
+}
+#net-panel h2 { font-size:18px; letter-spacing:2px; color:#2dd4bf; margin-bottom:4px; text-align:center; }
+#net-panel .net-sub { font-size:10px; color:#5b8; text-align:center; margin-bottom:14px; opacity:0.8; }
+#net-panel label { display:block; font-size:11px; color:#8fd; margin:10px 0 4px; letter-spacing:1px; }
+#net-panel input {
+  width:100%; padding:8px 10px; font-family:inherit; font-size:13px;
+  background:#04080a; color:#cfe; border:1px solid #1f6f63; border-radius:3px; outline:none;
+}
+#net-panel input:focus { border-color:#2dd4bf; box-shadow:0 0 8px rgba(45,212,191,0.4); }
+#net-panel .net-row { display:flex; gap:8px; align-items:flex-end; }
+#net-panel .net-row input { flex:1; }
+#net-panel button {
+  margin-top:6px; padding:8px 12px; font-family:inherit; font-size:12px; letter-spacing:1px;
+  background:#0d2b28; color:#2dd4bf; border:1px solid #2dd4bf; border-radius:3px; cursor:pointer;
+  transition:background 0.12s, color 0.12s;
+}
+#net-panel button:hover:not(:disabled) { background:#2dd4bf; color:#04080a; }
+#net-panel button:disabled { opacity:0.4; cursor:not-allowed; }
+#net-panel .net-btn-full { width:100%; }
+#net-panel hr { border:none; border-top:1px solid #163; margin:14px 0; }
+#net-status { font-size:11px; margin-top:12px; min-height:30px; line-height:1.5; color:#9fb; white-space:pre-line; }
+#net-status .ok { color:#3f7; }
+#net-status .err { color:#f66; }
+#net-roomcode { font-size:22px; letter-spacing:6px; color:#ffd166; text-align:center; margin:6px 0; font-weight:bold; }
+#net-close { position:absolute; top:14px; right:18px; font-size:20px; color:#5b8; cursor:pointer; background:none; border:none; }
+#net-close:hover { color:#2dd4bf; }
+#net-room-input { text-transform:uppercase; }
 </style>
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
+
+<!-- VS ONLINE connection overlay (HTML inputs over the canvas) -->
+<div id="net-overlay">
+  <div id="net-panel">
+    <button id="net-close" title="Close">&times;</button>
+    <h2>VS ONLINE</h2>
+    <div class="net-sub">SELF-HOSTED · ROOM CODE 1V1</div>
+
+    <label for="net-url">SERVER URL</label>
+    <input id="net-url" type="text" placeholder="https://xxxx.ngrok-free.app" autocomplete="off" spellcheck="false">
+    <button id="net-connect" class="net-btn-full">CONNECT</button>
+
+    <hr>
+
+    <button id="net-create" class="net-btn-full" disabled>CREATE ROOM</button>
+    <div id="net-roomcode"></div>
+    <label for="net-room-input">JOIN WITH CODE</label>
+    <div class="net-row">
+      <input id="net-room-input" type="text" maxlength="4" placeholder="ABCD" autocomplete="off" spellcheck="false">
+      <button id="net-join" disabled>JOIN</button>
+    </div>
+
+    <div id="net-status">Not connected.</div>
+  </div>
+</div>
+
+<!-- Networking layer (Vite-bundled module). Optional: if it fails to load,
+     window.SplineNet stays undefined and the local-only build is unaffected. -->
+<script type="module" src="/src/net/netClient.js"></script>
+
 <script>
 // =====================================================
 // 1. CONFIG AND CONSTANTS
@@ -303,6 +374,8 @@ function makePlayer(id, sx, sy, controls, color) {
     parryFlash:0,
     isAI:false,
     aiInput:{ left:false, right:false, jump:false, attack:false, dash:false, projectile:false },
+    isRemote:false,
+    netInput:{ left:false, right:false, jump:false, attack:false, dash:false, projectile:false, guard:false },
     ai:{ decisionTimer:0, jumpTimer:0, attackCooldown:0 },
     statMods:{ projectileSpeedMult:1, projectileCooldownMult:1, dashSpeedMult:1, dashCooldownMult:1, shieldRegenMult:1 },
   };
@@ -317,7 +390,7 @@ let statsInfo = { arcLength:0, sampledCount:0, distance:0, speed:0, actualSpeed:
 let screenShake = { timer:0, strength:0 };
 
 // ── TV Menu & UI state ──────────────────────────────────────────────────────
-const MENU_OPTIONS = ['RESUME','VS LOCAL','VS AI','PRACTICE','DEMO LAB','CONTROLS','RESET MATCH'];
+const MENU_OPTIONS = ['RESUME','VS LOCAL','VS ONLINE','VS AI','PRACTICE','DEMO LAB','CONTROLS','RESET MATCH'];
 let UI = {
   menuOpen:false, menuSel:0, menuPage:'main',
   menuAnim:0, menuPhase:'closed',
@@ -365,6 +438,8 @@ function initGameState() {
 const keys = {};
 
 window.addEventListener('keydown', e => {
+  // While typing in the VS ONLINE overlay inputs, don't let keys leak into the game.
+  if (e.target && e.target.closest && e.target.closest('#net-overlay')) return;
   const wasDown = keys[e.key];
   keys[e.key] = true;
 
@@ -414,7 +489,14 @@ window.addEventListener('keydown', e => {
   if (e.key === '1')   { GS.methodMode = 'linear';  return; }
   if (e.key === '2')   { GS.methodMode = 'catmull'; return; }
   if (e.key === '3')   { GS.methodMode = 'full';    return; }
-  if (e.key === 'r' || e.key === 'R') { resetMatch(); return; }
+  if (e.key === 'r' || e.key === 'R') {
+    // Online reset would desync the peers (not server-authoritative yet) — guard it.
+    if (GS.mode === 'online') {
+      GS.floatTexts.push({ x:DESIGN_WIDTH/2, y:DESIGN_HEIGHT/2-30, text:'Online reset is not available yet.', color:'#ff8833', life:2.0, maxLife:2.0, size:22 });
+      return;
+    }
+    resetMatch(); return;
+  }
   if (e.key === 'p' || e.key === 'P') { togglePractice(); return; }
   if (e.key === 'i' || e.key === 'I') { toggleAI(); return; }
   if (e.key === '\\')  { GS.showHitbox = !GS.showHitbox; return; }
@@ -517,6 +599,7 @@ function handleMenuSelect() {
   const opt = MENU_OPTIONS[UI.menuSel];
   if (opt === 'RESUME')      { UI.menuPhase = 'closing'; triggerMenuPageFlash(0.75); return; }
   if (opt === 'VS LOCAL')    { const mm=GS.methodMode,sh=GS.showHitbox; initGameState(); GS.methodMode=mm; GS.showHitbox=sh; GS.mode='versus'; UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
+  if (opt === 'VS ONLINE')   { UI.menuPhase='closing'; triggerMenuPageFlash(0.85); openNetOverlay(); return; }
   if (opt === 'VS AI')       { toggleAI(); UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
   if (opt === 'PRACTICE')    { const mm=GS.methodMode,sh=GS.showHitbox; initGameState(); GS.methodMode=mm; GS.showHitbox=sh; GS.mode='practice'; GS.players[1].isDummy=true; UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
   if (opt === 'DEMO LAB')    { if(GS.mode!=='demoLab'){GS.mode='demoLab'; restartDemo();} UI.menuPhase='closing'; triggerMenuPageFlash(0.9); return; }
@@ -525,10 +608,161 @@ function handleMenuSelect() {
 }
 
 // =====================================================
+// 5b. ONLINE / NETWORK BOOTSTRAP
+// =====================================================
+// Wires the VS ONLINE HTML overlay to window.SplineNet (the Vite-bundled
+// networking module). Fully optional: if SplineNet failed to load, the overlay
+// reports it and every local mode keeps working untouched.
+
+const netEls = {
+  overlay:   document.getElementById('net-overlay'),
+  url:       document.getElementById('net-url'),
+  connect:   document.getElementById('net-connect'),
+  create:    document.getElementById('net-create'),
+  roomcode:  document.getElementById('net-roomcode'),
+  roomInput: document.getElementById('net-room-input'),
+  join:      document.getElementById('net-join'),
+  status:    document.getElementById('net-status'),
+  close:     document.getElementById('net-close'),
+};
+
+let netWired = false; // SplineNet.onEvent registered once
+
+function openNetOverlay() {
+  if (!netEls.overlay) return;
+  netEls.overlay.classList.add('open');
+  wireSplineNet();
+  renderNetStatus();
+  // Prefill last-used URL if remembered this session.
+  if (!netEls.url.value && window._lastServerUrl) netEls.url.value = window._lastServerUrl;
+  setTimeout(() => netEls.url && netEls.url.focus(), 30);
+}
+
+function closeNetOverlay() {
+  if (!netEls.overlay) return;
+  netEls.overlay.classList.remove('open');
+}
+
+// Register SplineNet lifecycle callback once the module is present.
+function wireSplineNet() {
+  if (netWired || !window.SplineNet) return;
+  netWired = true;
+  window.SplineNet.onEvent = (type, payload) => {
+    switch (type) {
+      case 'room-created':
+        netEls.roomcode.textContent = payload.code;
+        break;
+      case 'peer-joined':
+        startOnlineMatch(payload.slot || SplineNet.state.slot);
+        closeNetOverlay();
+        break;
+      case 'peer-left':
+        endOnlineMatch('Opponent left the room.');
+        break;
+      case 'disconnected':
+        if (GS.mode === 'online') endOnlineMatch('Disconnected from server.');
+        break;
+    }
+    renderNetStatus();
+  };
+}
+
+// Start an online versus match. `slot` is 'p1' (host) or 'p2' (guest).
+// The local player keeps keyboard control; the other slot becomes remote and
+// reads its input from netInput (fed each frame in the update loop).
+function startOnlineMatch(slot) {
+  const mm = GS.methodMode, sh = GS.showHitbox;
+  initGameState();
+  GS.methodMode = mm; GS.showHitbox = sh;
+  GS.mode = 'online';
+  const remote = slot === 'p2' ? GS.players[0] : GS.players[1];
+  remote.isRemote = true;
+  remote.isAI = false;
+  remote.isDummy = false;
+  // Close the TV menu if it happens to be open.
+  UI.menuOpen = false; UI.menuPhase = 'closed';
+}
+
+function endOnlineMatch(reason) {
+  // Drop back to a local versus match; clear remote flags.
+  if (GS.mode === 'online') {
+    const mm = GS.methodMode, sh = GS.showHitbox;
+    initGameState();
+    GS.methodMode = mm; GS.showHitbox = sh;
+    GS.mode = 'versus';
+  }
+  if (window.SplineNet) SplineNet.leaveRoom();
+  if (reason) { openNetOverlay(); }
+  renderNetStatus(reason);
+}
+
+// Escape any server-controlled string before it enters innerHTML below.
+function escapeHtml(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g,
+    c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+function renderNetStatus(extra) {
+  if (!netEls.status) return;
+  const net = window.SplineNet;
+  if (!net) {
+    netEls.status.innerHTML = '<span class="err">Networking module not loaded.</span>\nServe over http(s), not file://, then reopen.';
+    netEls.create.disabled = true; netEls.join.disabled = true;
+    return;
+  }
+  const s = net.state;
+  const connected = net.isConnected();
+  netEls.create.disabled = !connected;
+  netEls.join.disabled = !connected;
+
+  let lines = [];
+  if (extra) lines.push('<span class="err">' + escapeHtml(extra) + '</span>');
+  if (s.status === 'connecting') lines.push('Connecting…');
+  else if (connected) {
+    lines.push('<span class="ok">Connected</span>' + (s.latency != null ? '  ·  ' + s.latency + ' ms' : ''));
+    if (s.room) lines.push('Room ' + escapeHtml(s.room) + (s.slot ? '  (' + (s.slot === 'p1' ? 'P1 / host' : 'P2 / guest') + ')' : ''));
+    if (s.room && !s.peerPresent) lines.push('Waiting for opponent…');
+    if (s.peerPresent) lines.push('<span class="ok">Opponent connected — fight!</span>');
+  } else if (s.status === 'error') {
+    lines.push('<span class="err">Connection failed.</span>' + (s.lastError ? '\n' + escapeHtml(s.lastError) : ''));
+  } else {
+    lines.push('Not connected.');
+  }
+  netEls.status.innerHTML = lines.join('\n');
+}
+
+// ── Overlay button wiring (DOM elements already parsed above this script) ──
+if (netEls.overlay) {
+  netEls.connect.addEventListener('click', () => {
+    const net = window.SplineNet;
+    if (!net) { renderNetStatus(); return; }
+    const url = netEls.url.value.trim();
+    if (!url) { renderNetStatus('Enter a server URL first.'); return; }
+    window._lastServerUrl = url;
+    renderNetStatus();
+    netEls.status.innerHTML = 'Connecting…';
+    net.connect(url).then(() => renderNetStatus()).catch(() => renderNetStatus());
+  });
+  netEls.create.addEventListener('click', () => {
+    if (window.SplineNet) { window.SplineNet.createRoom(); }
+  });
+  netEls.join.addEventListener('click', () => {
+    if (window.SplineNet) { window.SplineNet.joinRoom(netEls.roomInput.value); renderNetStatus(); }
+  });
+  netEls.roomInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') netEls.join.click();
+  });
+  netEls.close.addEventListener('click', closeNetOverlay);
+  // Poll status so latency / waiting-state stay fresh while the overlay is open.
+  setInterval(() => { if (netEls.overlay.classList.contains('open')) renderNetStatus(); }, 1000);
+}
+
+// =====================================================
 // 6. ARENA AND PHYSICS
 // =====================================================
 
 function getInput(player, dir) {
+  if (player.isRemote) return !!player.netInput[dir];
   if (player.isAI) return !!player.aiInput[dir];
   return isDown(player.controls[dir]);
 }
@@ -771,7 +1005,7 @@ function updateDashCharge(player, dt) {
     player.dashCharging = false; player.dashPreviewPath = null;
     return;
   }
-  const keyHeld = isDown(player.controls.dash);
+  const keyHeld = getInput(player, 'dash');
   const canCharge = player.cooldowns.dash <= 0;
 
   if (keyHeld && canCharge) {
@@ -1616,7 +1850,7 @@ function updateGuard(player, dt) {
     player.shield = Math.min(SHIELD_MAX, player.shield + SHIELD_REGEN_PER_SEC * player.statMods.shieldRegenMult * 0.25 * dt);
     return;
   }
-  const guardKey = isDown(player.controls.guard);
+  const guardKey = getInput(player, 'guard');
   const canGuard = player.hitStunTimer <= 0 && player.guardBrokenTimer <= 0;
   if (guardKey && canGuard) {
     if (!player.guarding) player.guardPressedTimer = 0; // fresh press
@@ -1830,6 +2064,28 @@ function update(ts) {
 
   // AI update — writes aiInput before physics/ability reads
   if (p2.isAI) updateAIPlayer(p2, p1, dt);
+
+  // Online relay — send local player's intent, apply peer's into the remote
+  // player's netInput (read via getInput downstream). Non-authoritative.
+  if (GS.mode === 'online' && window.SplineNet && SplineNet.isConnected() && SplineNet.state.peerPresent) {
+    const slot    = SplineNet.state.slot;
+    const localP  = slot === 'p2' ? p2 : p1;
+    const remoteP = slot === 'p2' ? p1 : p2;
+    SplineNet.sendInput({
+      left:       isDown(localP.controls.left),
+      right:      isDown(localP.controls.right),
+      jump:       isDown(localP.controls.jump),
+      attack:     isDown(localP.controls.attack),
+      dash:       isDown(localP.controls.dash),
+      projectile: isDown(localP.controls.projectile),
+      guard:      isDown(localP.controls.guard),
+    });
+    const ri = SplineNet.remoteInput || {};
+    const ni = remoteP.netInput;
+    ni.left = !!ri.left; ni.right = !!ri.right; ni.jump = !!ri.jump;
+    ni.attack = !!ri.attack; ni.dash = !!ri.dash;
+    ni.projectile = !!ri.projectile; ni.guard = !!ri.guard;
+  }
 
   // Dash charge — human players only; AI uses executeDash directly
   updateDashCharge(p1, dt);
