@@ -440,8 +440,12 @@ const keys = {};
 window.addEventListener('keydown', e => {
   // While typing in the VS ONLINE overlay inputs, don't let keys leak into the game.
   if (e.target && e.target.closest && e.target.closest('#net-overlay')) return;
-  const wasDown = keys[e.key];
-  keys[e.key] = true;
+  // Normalize single-character keys to lowercase so a key held while Shift/CapsLock
+  // toggles case (e.g. 'a' -> 'A') still maps to the same held-key slot. Otherwise the
+  // matching keyup arrives as a different character and the key gets stuck "down".
+  const physKey = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const wasDown = keys[physKey];
+  keys[physKey] = true;
 
   // TV Menu — handled before anything else
   if (e.key === 'Escape') {
@@ -555,7 +559,10 @@ window.addEventListener('keydown', e => {
   }
 });
 
-window.addEventListener('keyup', e => { keys[e.key] = false; });
+window.addEventListener('keyup', e => {
+  const physKey = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  keys[physKey] = false;
+});
 
 function isDown(k) { return !!keys[k]; }
 

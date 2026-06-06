@@ -64,7 +64,7 @@ The file is organized into 14 numbered comment-banner sections; keep new code in
 14. MAIN GAME LOOP
 ```
 
-The detailed, up-to-date state of each subsystem (with constants and per-patch changes) lives in `CURRENT_PROJECT_HANDOFF.md` — read it before modifying combat, meteors, projectiles, or the Demo Lab. `PROJECT_CONTEXT.md` is the requirements spec / source of truth.
+The detailed, up-to-date state of each subsystem (with constants and per-patch changes) lives in `docs/dev-notes/CURRENT_PROJECT_HANDOFF.md` — read it before modifying combat, meteors, projectiles, or the Demo Lab. `docs/dev-notes/PROJECT_CONTEXT.md` is the requirements spec / source of truth.
 
 ## Hard rules (from the project spec — violating these breaks the demo or the grade)
 
@@ -87,4 +87,4 @@ Demo Lab: `G` dash · `H` projectile · `M` meteor · `U` power-ups · `B` impac
 
 ## Working contract for multi-agent workflow
 
-This repo was driven by a multi-tool workflow (`05_AGENT_WORKFLOW_README.md`): ChatGPT audits architecture, Gemini verifies the academic framing, Claude Opus 4.8 does the coding. Use MCP tools only when they directly serve the task — Playwright for browser testing after a change, Context7 for Canvas/keyboard API reference. Do not use MCP tools to expand scope (no multiplayer, no ML, no copied game code, no library substitution for the numerical methods).
+This repo was driven by a multi-tool workflow (`docs/dev-notes/05_AGENT_WORKFLOW_README.md`): ChatGPT audits architecture, Gemini verifies the academic framing, Claude Opus 4.8 does the coding. Use MCP tools only when they directly serve the task — Playwright for browser testing after a change, Context7 for Canvas/keyboard API reference. Do not use MCP tools to expand scope (no multiplayer, no ML, no copied game code, no library substitution for the numerical methods).
