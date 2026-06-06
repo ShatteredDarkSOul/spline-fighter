@@ -5,7 +5,7 @@ Universitas Negeri Yogyakarta — disguised as a 2D local-multiplayer arena figh
 *visibly proves* that numerical methods improve in-game movement, projectile trajectories, and
 constant-speed motion.
 
-![Spline Fighter gameplay](assets/screenshot.png)
+![Spline Fighter gameplay](screenshot.png)
 
 **▶ Live demo:** https://shattereddarksoul.github.io/spline-fighter/
 
